@@ -269,8 +269,11 @@ public static class TpsSceneSetup
             cc.height = worldHeight / sy;
             cc.radius = Mathf.Min(worldRadius / Mathf.Max(sx, sz), cc.height * 0.4f);
 
-            // 중심: 월드 중심을 플레이어 로컬로 변환
-            cc.center = player.transform.InverseTransformPoint(pB.center);
+            // 중심: 수평은 바운즈 중심, 수직은 캡슐 '바닥'을 루트 원점(=발밑)에 맞춘다.
+            // (애니메이션을 Root Transform Y "Based Upon Feet"로 구우면 발이 루트 높이에 오므로,
+            //  캡슐 바닥을 루트 원점에 두면 발이 정확히 지면에 닿는다. T-포즈 발 위치로 잡으면 애니메이션 후 뜬다.)
+            Vector3 localCenter = player.transform.InverseTransformPoint(pB.center);
+            cc.center = new Vector3(localCenter.x, cc.height * 0.5f, localCenter.z);
 
             // stepOffset / skinWidth 등도 크기에 비례해서 설정(안 그러면 "Step Offset must be ..." 오류로 CC 비활성)
             cc.stepOffset = cc.height * 0.3f;           // 항상 height + 2*radius 이하 → 유효

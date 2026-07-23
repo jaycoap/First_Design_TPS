@@ -264,8 +264,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.034031667, y: 0, z: 0, w: 0.99942076}
-  m_LocalPosition: {x: 0, y: 0.19701976, z: -0.44228926}
+  m_LocalRotation: {x: 0.034031656, y: 0, z: 0, w: 0.99942076}
+  m_LocalPosition: {x: 0, y: 0.26251972, z: -0.4422892}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -328,22 +328,22 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ThirdPersonCamera
   target: {fileID: 839762385}
-  pivotHeight: 0.16686366
+  pivotHeight: 0.16686364
   mouseSensitivity: 0.15
   minPitch: -35
   maxPitch: 70
   initialPitch: 12
-  normalDistance: 0.44228926
-  normalShoulder: {x: 0.06634339, y: 0}
+  normalDistance: 0.4422892
+  normalShoulder: {x: 0.06634338, y: 0}
   normalFov: 60
-  aimDistance: 0.23119664
-  aimShoulder: {x: 0.088457845, y: 0.012062434}
+  aimDistance: 0.23119661
+  aimShoulder: {x: 0.08845784, y: 0.012062432}
   aimFov: 40
   transitionSpeed: 12
   collisionMask:
     serializedVersion: 2
     m_Bits: 4294967039
-  collisionRadius: 0.022114461
+  collisionRadius: 0.02211446
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -565,7 +565,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       propertyPath: m_LocalPosition.y
-      value: 0
+      value: 0.0655
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       propertyPath: m_LocalPosition.z
@@ -618,6 +618,22 @@ PrefabInstance:
     - target: {fileID: -7121769801107515815, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       propertyPath: m_Layer
       value: 8
+      objectReference: {fileID: 0}
+    - target: {fileID: -6803169544883306252, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 0.4171386
+      objectReference: {fileID: 0}
+    - target: {fileID: -6803169544883306252, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0.5654332
+      objectReference: {fileID: 0}
+    - target: {fileID: -6803169544883306252, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: -0.4348562
+      objectReference: {fileID: 0}
+    - target: {fileID: -6803169544883306252, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0.56318796
       objectReference: {fileID: 0}
     - target: {fileID: -6621945745981909287, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       propertyPath: m_Layer
@@ -843,6 +859,20 @@ PrefabInstance:
       propertyPath: m_Layer
       value: 8
       objectReference: {fileID: 0}
+    - target: {fileID: 5866666021909216657, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      propertyPath: m_Controller
+      value: 
+      objectReference: {fileID: 9100000, guid: a95a55157434fd7489de6bb6914df4c2, type: 2}
+    - target: {fileID: 5866666021909216657, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      propertyPath: m_WarningMessage
+      value: "\nBinding warning: Some generic clip(s) animate transforms that are
+        already bound by a Humanoid avatar. These transforms can only be changed
+        by Humanoid clips.\n\tTransform 'mixamorig:Hips'\n\tTransform 'mixamorig:LeftFoot'\n\tTransform
+        'mixamorig:LeftHandIndex1'\n\tTransform 'mixamorig:RightHandRing2'\n\tTransform
+        'mixamorig:RightArm'\n\tTransform 'mixamorig:LeftLeg'\n\tTransform 'mixamorig:LeftShoulder'\n\tTransform
+        'mixamorig:RightHandRing1'\n\tTransform 'mixamorig:RightHandIndex3'\n\tTransform
+        'mixamorig:LeftHandMiddle1'\n\tand more ...\n\tFrom animation clip 'mixamo.com'"
+      objectReference: {fileID: 0}
     - target: {fileID: 6240733294840144465, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       propertyPath: m_Layer
       value: 8
@@ -960,12 +990,12 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerController
   tpsCamera: {fileID: 330585548}
   animator: {fileID: 839762384}
-  walkSpeed: 0.27922302
-  runSpeed: 0.61429065
-  aimSpeed: 0.22337842
+  walkSpeed: 0.27922297
+  runSpeed: 0.61429054
+  aimSpeed: 0.22337838
   rotationSpeed: 15
-  gravity: -2.2337842
-  jumpHeight: 0.13402706
+  gravity: -2.2337837
+  jumpHeight: 0.13402703
 --- !u!114 &839762388
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1004,13 +1034,13 @@ CharacterController:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Height: 0.20104057
+  m_Height: 0.20104054
   m_Radius: 0.073474094
   m_SlopeLimit: 45
-  m_StepOffset: 0.06031217
+  m_StepOffset: 0.060312163
   m_SkinWidth: 0.0073474096
   m_MinMoveDistance: 0
-  m_Center: {x: -0.0033803359, y: 0.082538165, z: -0.0015049204}
+  m_Center: {x: -0.0033803359, y: 0.108, z: -0.0015049204}
 --- !u!1001 &912557160
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -1033,43 +1063,43 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalPosition.x
-      value: -0.0564
+      value: 0.0006886062
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalPosition.y
-      value: 0.0327
+      value: 0.041112322
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalPosition.z
-      value: 0.0094
+      value: -0.0009744987
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalRotation.w
-      value: 0.065511055
+      value: 0.5620652
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalRotation.x
-      value: 0.77207154
+      value: 0.5086771
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalRotation.y
-      value: -0.08067104
+      value: -0.44389066
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalRotation.z
-      value: 0.6269817
+      value: 0.47779858
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalEulerAnglesHint.x
-      value: 11.672
+      value: 84.874
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalEulerAnglesHint.y
-      value: 102.095
+      value: -8.301
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_LocalEulerAnglesHint.z
-      value: 182.483
+      value: 73.142
       objectReference: {fileID: 0}
     - target: {fileID: -5213541505306926646, guid: 17c77935b3837264e9b4bb3f18652c89, type: 3}
       propertyPath: m_Layer
