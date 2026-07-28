@@ -51,6 +51,7 @@ public class ThirdPersonCamera : MonoBehaviour
     /// <summary>다른 스크립트(발사/이동)에서 현재 카메라 조준 여부와 방향을 참조.</summary>
     public bool IsAiming => _isAiming;
     public float Yaw => _yaw;
+    public float Pitch => _pitch;
 
     private void Start()
     {

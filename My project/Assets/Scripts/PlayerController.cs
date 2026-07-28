@@ -23,25 +23,65 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private float runSpeed = 5.5f;
     [SerializeField] private float aimSpeed = 2f;
     [SerializeField] private float rotationSpeed = 15f;
+    [Tooltip("이동 중 Shift를 이 시간 이상 유지하면 달리기로 전환 (0 = 누르는 즉시)")]
+    [SerializeField] private float runHoldTime = 0f;
+    [Tooltip("구르기 중 전방 이동 속도 = walkSpeed × 이 배율.\n달리기 속도로 미끄러져 과이동하는 것을 막고, 구르기 관성만 남긴다.")]
+    [SerializeField] private float rollSpeedMultiplier = 1.2f;
 
     [Header("중력/점프")]
     [SerializeField] private float gravity = -20f;
     [SerializeField] private float jumpHeight = 1.2f;
 
+    [Header("조준")]
+    [Tooltip("크로스헤어 조준점 계산용 레이 마스크(자기 몸은 코드에서 제외)")]
+    [SerializeField] private LayerMask aimMask = ~0;
+    [Tooltip("머리/상체가 크로스헤어 지점을 바라보게 하는 LookAt IK 사용 여부")]
+    [SerializeField] private bool lookAtAim = true;
+    [Range(0f, 1f)]
+    [Tooltip("상체(척추)를 조준점 쪽으로 트는 정도. 0=머리만, 1=상체 전체")]
+    [SerializeField] private float lookAtBodyWeight = 0.35f;
+    [Tooltip("총 메시의 실제 총열 방향을 측정해, 총구가 크로스헤어(화면 정면)를 향하도록\n수평은 몸 전체 회전, 수직은 가슴 기울임으로 보정한다(실제 TPS 표준 방식).")]
+    [SerializeField] private bool gunForwardAlign = true;
+    [Tooltip("가슴 상하 기울임 최대 각도(수직 보정 한계)")]
+    [SerializeField] private float maxSpinePitch = 30f;
+    [Tooltip("조준 보정 켜고 끌 때 블렌드 속도")]
+    [SerializeField] private float aimBlendSpeed = 8f;
+    [Tooltip("수평 미세 보정(도). 총구가 크로스헤어보다 오른쪽이면 -, 왼쪽이면 +")]
+    [SerializeField] private float aimYawTrim = 0f;
+    [Tooltip("수직 미세 보정(도). 총구가 크로스헤어보다 위면 +, 아래면 -")]
+    [SerializeField] private float aimPitchTrim = 0f;
+
     private CharacterController _cc;
     private Transform _camTransform;
+    private Camera _aimCam;
     private float _verticalVelocity;
+    private float _runHoldTimer; // 이동 중 Shift 유지 시간 누적
+    private bool _moving;              // 이번 프레임 이동 여부(조준 보정 판단용)
+    private bool _rolling;             // 다이브 롤 재생 중(회전/조준 보정 잠금)
+    private float _aimBlend;           // 조준 보정 블렌드(0~1)
+    private float _poseGunYawOffset;   // 포즈상 총열이 몸 정면에서 틀어진 요 각(자동 측정)
+    private WeaponHolder _weaponHolder;
+    private int _upperLayerIdx = -2;   // UpperBody 레이어 인덱스(-2=미조회, -1=없음)
+    private Transform _gun;            // 현재 무기(총열 측정 대상)
+    private Vector3 _barrelAxisAbs;    // 총 로컬 총열 축(부호 없는 기준, 최장 메시 축)
+    private bool _barrelResolved;
+
+    private const float AimRange = 500f;
 
     // Animator 파라미터 해시(있을 때만 사용)
     private static readonly int SpeedHash = Animator.StringToHash("Speed");
+    private static readonly int IsRunningHash = Animator.StringToHash("IsRunning");
     private static readonly int IsAimingHash = Animator.StringToHash("IsAiming");
+    private static readonly int RollHash = Animator.StringToHash("Roll");
 
     private void Awake()
     {
         _cc = GetComponent<CharacterController>();
         if (tpsCamera == null) tpsCamera = Camera.main != null ? Camera.main.GetComponent<ThirdPersonCamera>() : null;
         if (tpsCamera != null) _camTransform = tpsCamera.transform;
+        _aimCam = _camTransform != null ? _camTransform.GetComponent<Camera>() : Camera.main;
         if (animator == null) animator = GetComponentInChildren<Animator>();
+        _weaponHolder = GetComponent<WeaponHolder>();
     }
 
     private void Update()
@@ -52,7 +92,7 @@ public class PlayerController : MonoBehaviour
 
         // --- 입력 읽기 (New Input System) ---
         Vector2 input = ReadMoveInput();
-        bool running = Keyboard.current.leftShiftKey.isPressed;
+        bool shiftHeld = Keyboard.current.leftShiftKey.isPressed;
 
         // 카메라 기준 이동 방향(수평 평면)
         Vector3 camForward = _camTransform != null ? _camTransform.forward : Vector3.forward;
@@ -64,20 +104,53 @@ public class PlayerController : MonoBehaviour
         float inputMag = Mathf.Clamp01(moveDir.magnitude);
         moveDir.Normalize();
 
-        float speed = isAiming ? aimSpeed : (running ? runSpeed : walkSpeed);
+        bool moving = inputMag > 0.01f;
+        _moving = moving;
+
+        // 다이브 롤 재생 중(전환 진입 포함) 여부 — 롤 동안엔 회전/조준 보정을 잠근다
+        _rolling = false;
+        if (animator != null && animator.runtimeAnimatorController != null)
+        {
+            _rolling = animator.GetCurrentAnimatorStateInfo(0).IsName("Running Dive Roll")
+                    || animator.GetNextAnimatorStateInfo(0).IsName("Running Dive Roll");
+        }
+
+        // 달리기 판정: 반드시 Shift + 이동이어야 하고, Shift를 runHoldTime(기본 0=즉시) 이상 유지해야 달리기.
+        // 멈추거나 Shift를 떼면 타이머가 리셋되어 다시 걷기로 돌아간다. 조준 중엔 달리지 않는다.
+        bool shiftRun = moving && shiftHeld && !isAiming;
+        if (shiftRun) _runHoldTimer += Time.deltaTime;
+        else _runHoldTimer = 0f;
+        bool isRunning = shiftRun && _runHoldTimer >= runHoldTime;
+
+        float speed = isAiming ? aimSpeed : (isRunning ? runSpeed : walkSpeed);
         Vector3 horizontal = moveDir * speed * inputMag;
 
+        // 구르기 중엔 입력/달리기 속도를 무시하고 몸 전방으로 일정 속도만 이동.
+        // (달리기 속도 그대로 미끄러져 롤이 끝나기 전에 과이동하는 문제 방지 —
+        //  롤이 끝나면 키를 계속 누르고 있을 경우 자연히 달리기로 복귀한다)
+        if (_rolling)
+            horizontal = transform.forward * (walkSpeed * rollSpeedMultiplier);
+
         // --- 회전 ---
-        if (isAiming)
+        if (_rolling)
         {
-            // 조준 중엔 카메라(요) 방향으로 몸을 정렬
-            float yaw = tpsCamera.Yaw;
-            Quaternion targetRot = Quaternion.Euler(0f, yaw, 0f);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, rotationSpeed * Time.deltaTime);
+            // 구르기 중엔 회전 잠금: 구르기 시작 방향 그대로 유지
         }
-        else if (inputMag > 0.01f)
+        else if (isAiming || !moving)
         {
-            // 평상시엔 이동 방향으로 회전
+            // 조준/정지 시: 몸을 카메라 요에 맞추되, 포즈상 총이 틀어진 각도만큼 되돌려
+            // 총이 화면 정면(크로스헤어)을 향하게 한다. (몸 전체 회전 → 포즈 자연 유지)
+            if (tpsCamera != null)
+            {
+                float targetYaw = tpsCamera.Yaw;
+                if (gunForwardAlign) targetYaw -= _poseGunYawOffset * _aimBlend;
+                Quaternion targetRot = Quaternion.Euler(0f, targetYaw, 0f);
+                transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, rotationSpeed * Time.deltaTime);
+            }
+        }
+        else
+        {
+            // 비조준 이동 중엔 이동 방향으로 회전
             Quaternion targetRot = Quaternion.LookRotation(moveDir);
             transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, rotationSpeed * Time.deltaTime);
         }
@@ -97,11 +170,26 @@ public class PlayerController : MonoBehaviour
         // --- Animator 갱신(컨트롤러가 실제로 있을 때만) ---
         if (animator != null && animator.runtimeAnimatorController != null)
         {
-            // 조준 중엔 몸 로컬 기준 전/후/좌/우 이동을 표현하기 위해 방향 성분 전달도 가능하지만
-            // 기본은 이동 속도 크기만 넘긴다.
-            float animSpeed = (isAiming ? aimSpeed : (running ? runSpeed : walkSpeed)) * inputMag;
+            // Speed는 이동 여부(0=정지)로 Idle↔Walk 전환에 쓰이고,
+            // IsRunning이 켜지면 Walk→(Idle To Running)→Rifle Run으로 이어진다.
+            float animSpeed = speed * inputMag;
             animator.SetFloat(SpeedHash, animSpeed, 0.1f, Time.deltaTime);
+            animator.SetBool(IsRunningHash, isRunning);
             animator.SetBool(IsAimingHash, isAiming);
+
+            // 다이브 롤: 달리는 중에 C를 누르면 발동
+            if (isRunning && Keyboard.current.cKey.wasPressedThisFrame)
+                animator.SetTrigger(RollHash);
+
+            // 걷기 중 상체를 소총 파지 자세로 유지(UpperBody 레이어) → 총이 허공에 뜨는 문제 방지.
+            // 달리기(Rifle Run)는 자체가 소총 애니메이션이라 제외, 롤 중에도 제외.
+            if (_upperLayerIdx == -2) _upperLayerIdx = animator.GetLayerIndex("UpperBody");
+            if (_upperLayerIdx >= 0)
+            {
+                float target = (!_rolling && !isRunning && moving) ? 1f : 0f;
+                float w = Mathf.MoveTowards(animator.GetLayerWeight(_upperLayerIdx), target, 5f * Time.deltaTime);
+                animator.SetLayerWeight(_upperLayerIdx, w);
+            }
         }
     }
 
@@ -111,5 +199,128 @@ public class PlayerController : MonoBehaviour
         float x = (kb.dKey.isPressed ? 1f : 0f) - (kb.aKey.isPressed ? 1f : 0f);
         float y = (kb.wKey.isPressed ? 1f : 0f) - (kb.sKey.isPressed ? 1f : 0f);
         return new Vector2(x, y);
+    }
+
+    /// <summary>
+    /// 휴머노이드 LookAt IK: 머리(+상체 일부)가 크로스헤어 지점을 바라보게 한다.
+    /// Animator 레이어의 IK Pass가 켜져 있어야 호출된다(PlayerAnimatorSetup이 켬).
+    /// 조준(우클릭) 중엔 상체 비중을 높여 총도 조준점 쪽으로 따라가게 한다.
+    /// </summary>
+    private void OnAnimatorIK(int layerIndex)
+    {
+        if (!lookAtAim || animator == null || animator.runtimeAnimatorController == null) return;
+        if (_rolling) return; // 구르기 중 머리 IK는 목이 꺾여 보임 → 끔
+
+        // 수직/수평 조준은 LateUpdate의 총열 보정이 담당 → LookAt은 머리 위주로만(자연스러운 시선)
+        animator.SetLookAtWeight(1f, lookAtBodyWeight, 0.9f, 0f, 0.5f); // (전체, 몸, 머리, 눈, 제한)
+        animator.SetLookAtPosition(GetAimPoint());
+    }
+
+    /// <summary>
+    /// 조준 보정(실제 TPS 표준 방식). 총 메시의 실제 총열 방향을 측정해:
+    /// 1) 수평: 총열이 몸 정면에서 틀어진 요 각을 측정 → Update의 몸 회전이 이만큼 되돌림
+    ///    (본을 꺾지 않고 몸 전체를 돌리므로 포즈가 완전히 자연스럽게 유지된다)
+    /// 2) 수직: 총열 피치가 카메라 피치와 일치하도록 가슴을 제한된 각도 안에서 기울임
+    /// → 총구가 실제로 크로스헤어 지점을 향한다. (롤 중/비조준 이동 중엔 블렌드 아웃)
+    /// </summary>
+    private void LateUpdate()
+    {
+        if (animator == null || animator.runtimeAnimatorController == null) return;
+
+        bool aiming = tpsCamera != null && tpsCamera.IsAiming;
+        bool wantAim = gunForwardAlign && !_rolling && (aiming || !_moving);
+        _aimBlend = Mathf.MoveTowards(_aimBlend, wantAim ? 1f : 0f, aimBlendSpeed * Time.deltaTime);
+
+        // 구르기 중엔 몸이 뒤집혀 총열 측정값이 엉터리가 되므로 측정/보정 모두 건너뛴다
+        if (_rolling) return;
+
+        // --- 총열 방향 측정(총 메시 최장축, 부호는 매 프레임 캐릭터 전방 반구로) ---
+        if (!TryGetBarrelDirection(out Vector3 barrelWorld)) return;
+
+        // 1) 요 오프셋: 몸 로컬 기준이라 몸 회전과 무관(피드백 없음). Update가 사용.
+        Vector3 local = transform.InverseTransformDirection(barrelWorld);
+        Vector3 flat = new Vector3(local.x, 0f, local.z);
+        if (flat.sqrMagnitude > 1e-6f)
+            _poseGunYawOffset = Mathf.Atan2(flat.x, flat.z) * Mathf.Rad2Deg + aimYawTrim;
+
+        // 2) 피치 보정: 총열 피치를 카메라 피치에 일치시키는 만큼만 가슴을 기울임
+        if (_aimBlend > 0.001f && tpsCamera != null)
+        {
+            Transform chest = animator.GetBoneTransform(HumanBodyBones.UpperChest);
+            if (chest == null) chest = animator.GetBoneTransform(HumanBodyBones.Chest);
+            if (chest == null) chest = animator.GetBoneTransform(HumanBodyBones.Spine);
+            if (chest != null)
+            {
+                // 피치 부호는 카메라와 동일 규약: +가 아래
+                float barrelPitch = -Mathf.Atan2(barrelWorld.y,
+                    new Vector2(barrelWorld.x, barrelWorld.z).magnitude) * Mathf.Rad2Deg;
+                float delta = Mathf.Clamp(tpsCamera.Pitch - barrelPitch + aimPitchTrim,
+                                          -maxSpinePitch, maxSpinePitch);
+                chest.rotation = Quaternion.AngleAxis(delta * _aimBlend, transform.right) * chest.rotation;
+            }
+        }
+    }
+
+    /// <summary>현재 총의 실제 총열 방향(월드). 총 메시의 최장 로컬 축 기준, 부호는 캐릭터 전방 반구.</summary>
+    private bool TryGetBarrelDirection(out Vector3 barrelWorld)
+    {
+        barrelWorld = Vector3.zero;
+        if (_gun == null)
+        {
+            var w = _weaponHolder != null ? _weaponHolder.CurrentWeapon : null;
+            if (w == null) return false;
+            _gun = w.transform;
+        }
+        if (!_barrelResolved)
+        {
+            _barrelAxisAbs = GetLongestLocalAxis(_gun);
+            _barrelResolved = true;
+        }
+
+        barrelWorld = _gun.rotation * _barrelAxisAbs;
+        // 들고 있는 총은 항상 캐릭터 앞 반구를 향한다 → 부호를 매 프레임 자기교정
+        if (Vector3.Dot(barrelWorld, transform.forward) < 0f) barrelWorld = -barrelWorld;
+        return true;
+    }
+
+    /// <summary>총 하위 메시들의 로컬 바운즈에서 가장 긴 축(단위벡터, 부호 미정)을 구한다.</summary>
+    private static Vector3 GetLongestLocalAxis(Transform gun)
+    {
+        bool has = false;
+        Bounds acc = new Bounds();
+        foreach (var r in gun.GetComponentsInChildren<Renderer>())
+        {
+            Mesh mesh = r is SkinnedMeshRenderer smr ? smr.sharedMesh
+                      : r.TryGetComponent(out MeshFilter mf) ? mf.sharedMesh : null;
+            if (mesh == null) continue;
+            Vector3 c = mesh.bounds.center, e = mesh.bounds.extents;
+            for (int i = 0; i < 8; i++)
+            {
+                Vector3 corner = c + new Vector3(
+                    (i & 1) == 0 ? -e.x : e.x,
+                    (i & 2) == 0 ? -e.y : e.y,
+                    (i & 4) == 0 ? -e.z : e.z);
+                Vector3 p = gun.InverseTransformPoint(r.transform.TransformPoint(corner));
+                if (!has) { acc = new Bounds(p, Vector3.zero); has = true; }
+                else acc.Encapsulate(p);
+            }
+        }
+        if (!has) return Vector3.forward;
+
+        Vector3 s = acc.size;
+        if (s.x >= s.y && s.x >= s.z) return Vector3.right;
+        return s.y >= s.z ? Vector3.up : Vector3.forward;
+    }
+
+    /// <summary>화면 중앙(크로스헤어) 레이가 맞는 월드 지점. PlayerShooter의 조준 레이와 동일.</summary>
+    private Vector3 GetAimPoint()
+    {
+        if (_aimCam == null) return transform.position + transform.forward * AimRange;
+
+        Ray ray = _aimCam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+        if (Physics.Raycast(ray, out RaycastHit hit, AimRange, aimMask, QueryTriggerInteraction.Ignore)
+            && !hit.collider.transform.IsChildOf(transform)) // 자기 몸은 무시
+            return hit.point;
+        return ray.origin + ray.direction * AimRange;
     }
 }

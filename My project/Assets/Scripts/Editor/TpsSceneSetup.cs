@@ -142,6 +142,14 @@ public static class TpsSceneSetup
                 SetInt(camSo, "collisionMask", ~playerMask); // Player 제외
                 camSo.ApplyModifiedPropertiesWithoutUndo();
 
+                // 크로스헤어 HUD(화면 중앙 = 조준/탄착점)
+                var crosshair = GetOrAdd<Crosshair>(cam.gameObject);
+                var chSo = new SerializedObject(crosshair);
+                SetObj(chSo, "aimCamera", cam);
+                SetObj(chSo, "tpsCamera", tpsCam);
+                SetInt(chSo, "hitMask", ~playerMask); // Player 제외(자기 몸에 조준점 색 안 바뀌게)
+                chSo.ApplyModifiedPropertiesWithoutUndo();
+
                 // 에디트 모드 Game 뷰에서도 3인칭으로 보이도록 카메라를 플레이어 뒤에 배치
                 const float pivotHeight = 1.5f;
                 const float distance = 4f;
@@ -222,6 +230,30 @@ public static class TpsSceneSetup
 
         EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
         EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene());
+    }
+
+    /// <summary>메뉴에서 단독 실행: 전체 재빌드 없이 Main Camera에 크로스헤어만 추가/갱신.</summary>
+    [MenuItem("Tools/TPS/Add HUD Crosshair")]
+    public static void AddCrosshairMenu()
+    {
+        var cam = Camera.main;
+        if (cam == null)
+        {
+            var camObj = GameObject.Find("Main Camera");
+            if (camObj != null) cam = camObj.GetComponent<Camera>();
+        }
+        if (cam == null) { Debug.LogError("[TPS] Main Camera를 찾지 못했습니다."); return; }
+
+        var crosshair = GetOrAdd<Crosshair>(cam.gameObject);
+        var so = new SerializedObject(crosshair);
+        SetObj(so, "aimCamera", cam);
+        var tps = cam.GetComponent<ThirdPersonCamera>();
+        if (tps != null) SetObj(so, "tpsCamera", tps);
+        so.ApplyModifiedPropertiesWithoutUndo();
+
+        EditorSceneManager.MarkSceneDirty(cam.gameObject.scene);
+        EditorSceneManager.SaveScene(cam.gameObject.scene);
+        Debug.Log("[TPS] 크로스헤어 추가 완료. Play로 확인하세요.");
     }
 
     /// <summary>메뉴에서 단독 실행: 모델 실측 정보를 콘솔에 출력(진단용).</summary>

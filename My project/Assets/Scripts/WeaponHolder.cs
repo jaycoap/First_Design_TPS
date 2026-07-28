@@ -37,6 +37,9 @@ public class WeaponHolder : MonoBehaviour
 
     private GameObject _spawnedWeapon;
 
+    /// <summary>현재 들고 있는 무기(런타임 생성 또는 씬 배치). 조준 보정 등에서 참조.</summary>
+    public GameObject CurrentWeapon => _spawnedWeapon != null ? _spawnedWeapon : existingWeapon;
+
     private void Start()
     {
         EquipWeapon();
