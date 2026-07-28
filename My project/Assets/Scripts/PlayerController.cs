@@ -32,6 +32,12 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private float gravity = -20f;
     [SerializeField] private float jumpHeight = 1.2f;
 
+    [Header("접지 보정")]
+    [Tooltip("애니메이션/리타게팅/레이어 블렌드 잔차로 발이 지면에서 뜨는 것을\n최종 포즈 기준으로 매 프레임 보정한다(지속 잔차만 제거, 순간 도약은 보존).")]
+    [SerializeField] private bool groundFeet = true;
+    [Tooltip("접지 보정 추적 속도. 높을수록 즉각 반응, 낮을수록 부드러움.")]
+    [SerializeField] private float groundFeetSpeed = 8f;
+
     [Header("조준")]
     [Tooltip("크로스헤어 조준점 계산용 레이 마스크(자기 몸은 코드에서 제외)")]
     [SerializeField] private LayerMask aimMask = ~0;
@@ -61,10 +67,17 @@ public class PlayerController : MonoBehaviour
     private float _aimBlend;           // 조준 보정 블렌드(0~1)
     private float _poseGunYawOffset;   // 포즈상 총열이 몸 정면에서 틀어진 요 각(자동 측정)
     private WeaponHolder _weaponHolder;
+    private PlayerShooter _shooter;    // 재장전 상태 참조(UpperBody 레이어 가중치)
+    private PlayerStats _stats;        // 기력(구르기) 참조
     private int _upperLayerIdx = -2;   // UpperBody 레이어 인덱스(-2=미조회, -1=없음)
     private Transform _gun;            // 현재 무기(총열 측정 대상)
     private Vector3 _barrelAxisAbs;    // 총 로컬 총열 축(부호 없는 기준, 최장 메시 축)
     private bool _barrelResolved;
+    private float _feetOffset;         // 스무딩된 발-지면 갭(접지 보정량)
+    private bool _feetOffsetInit;      // 첫 측정 여부(스폰 직후엔 스냅)
+    private bool _wasRolling;          // 직전 프레임 구르기 여부(복귀 시 스냅)
+    private float _groundContactY;     // CC가 실제로 밟은 접촉점 Y
+    private float _groundContactTime;  // 접촉 갱신 시각
 
     private const float AimRange = 500f;
 
@@ -82,7 +95,14 @@ public class PlayerController : MonoBehaviour
         _aimCam = _camTransform != null ? _camTransform.GetComponent<Camera>() : Camera.main;
         if (animator == null) animator = GetComponentInChildren<Animator>();
         _weaponHolder = GetComponent<WeaponHolder>();
+        _shooter = GetComponent<PlayerShooter>();
+        // 스탯이 씬에 없으면 기본값으로 자동 추가(HUD/기력/타임포스가 항상 동작하도록)
+        _stats = GetComponent<PlayerStats>();
+        if (_stats == null) _stats = gameObject.AddComponent<PlayerStats>();
     }
+
+    /// <summary>다이브 롤 재생 중 여부(회피 판정용 — 롤 중 피격은 회피로 처리).</summary>
+    public bool IsRolling => _rolling;
 
     private void Update()
     {
@@ -177,19 +197,32 @@ public class PlayerController : MonoBehaviour
             animator.SetBool(IsRunningHash, isRunning);
             animator.SetBool(IsAimingHash, isAiming);
 
-            // 다이브 롤: 달리는 중에 C를 누르면 발동
-            if (isRunning && Keyboard.current.cKey.wasPressedThisFrame)
+            // 다이브 롤: 달리는 중에 C를 누르면 발동(기력 소모, 부족하면 불가)
+            if (isRunning && Keyboard.current.cKey.wasPressedThisFrame
+                && (_stats == null || _stats.TryUseRollStamina()))
                 animator.SetTrigger(RollHash);
 
             // 걷기 중 상체를 소총 파지 자세로 유지(UpperBody 레이어) → 총이 허공에 뜨는 문제 방지.
             // 달리기(Rifle Run)는 자체가 소총 애니메이션이라 제외, 롤 중에도 제외.
+            // 재장전 중엔 이동 상태와 무관하게 상체 레이어를 켜서 재장전 모션을 재생한다.
             if (_upperLayerIdx == -2) _upperLayerIdx = animator.GetLayerIndex("UpperBody");
             if (_upperLayerIdx >= 0)
             {
-                float target = (!_rolling && !isRunning && moving) ? 1f : 0f;
+                bool reloading = _shooter != null && _shooter.IsReloading;
+                float target = (!_rolling && (reloading || (!isRunning && moving))) ? 1f : 0f;
                 float w = Mathf.MoveTowards(animator.GetLayerWeight(_upperLayerIdx), target, 5f * Time.deltaTime);
                 animator.SetLayerWeight(_upperLayerIdx, w);
             }
+        }
+    }
+
+    /// <summary>CC 이동 중 충돌 접촉점 기록. 위를 향한 면(바닥)만 지면으로 취급.</summary>
+    private void OnControllerColliderHit(ControllerColliderHit hit)
+    {
+        if (hit.normal.y > 0.5f)
+        {
+            _groundContactY = hit.point.y;
+            _groundContactTime = Time.time;
         }
     }
 
@@ -227,6 +260,8 @@ public class PlayerController : MonoBehaviour
     {
         if (animator == null || animator.runtimeAnimatorController == null) return;
 
+        ApplyFootGrounding();
+
         bool aiming = tpsCamera != null && tpsCamera.IsAiming;
         bool wantAim = gunForwardAlign && !_rolling && (aiming || !_moving);
         _aimBlend = Mathf.MoveTowards(_aimBlend, wantAim ? 1f : 0f, aimBlendSpeed * Time.deltaTime);
@@ -259,6 +294,63 @@ public class PlayerController : MonoBehaviour
                 chest.rotation = Quaternion.AngleAxis(delta * _aimBlend, transform.right) * chest.rotation;
             }
         }
+    }
+
+    /// <summary>
+    /// 접지 보정: 애니메이터가 최종 포즈를 쓴 뒤(LateUpdate) 발바닥 추정 높이를 재서
+    /// "레이캐스트로 찾은 실제 바닥" 대비 지속적인 갭만 힙 본을 내려 제거한다.
+    /// - 애니메이션은 진단상 접지가 정상이므로, 남는 갭의 원인은 CharacterController가
+    ///   물리 여유(skinWidth/접촉 오프셋)만큼 지면 위에 떠서 정지하는 것 →
+    ///   루트가 아니라 실제 지면을 기준으로 삼아야 완전히 사라진다.
+    /// - 갭을 천천히 추적(스무딩)하므로 달리기 도약 같은 순간적인 발 들림은 남는다.
+    /// - 구르기 중(몸이 수평)과 공중(점프)에서는 추적을 멈추고 마지막 보정량만 유지.
+    /// </summary>
+    private void ApplyFootGrounding()
+    {
+        if (!groundFeet) return;
+
+        Transform hips = animator.GetBoneTransform(HumanBodyBones.Hips);
+        Transform lf = animator.GetBoneTransform(HumanBodyBones.LeftFoot);
+        Transform rf = animator.GetBoneTransform(HumanBodyBones.RightFoot);
+        if (hips == null || lf == null || rf == null) return;
+
+        // 지면 기준: CC가 실제로 밟은 접촉점(OnControllerColliderHit). 최근 값만 신뢰.
+        bool hasGround = _cc.isGrounded && Time.time - _groundContactTime < 0.2f;
+
+        // 구르기 중엔 복귀 스냅을 예약(실제 측정이 이뤄질 때까지 유지)
+        if (_rolling) _wasRolling = true;
+
+        if (!_rolling && hasGround)
+        {
+            // 발바닥 추정: 발 본에서 발바닥까지의 오프셋 + 발끝 본 중 최저값
+            float sole = Mathf.Min(
+                lf.position.y - animator.leftFeetBottomHeight,
+                rf.position.y - animator.rightFeetBottomHeight);
+            Transform lt = animator.GetBoneTransform(HumanBodyBones.LeftToes);
+            Transform rt = animator.GetBoneTransform(HumanBodyBones.RightToes);
+            if (lt != null) sole = Mathf.Min(sole, lt.position.y);
+            if (rt != null) sole = Mathf.Min(sole, rt.position.y);
+
+            float gap = sole - _groundContactY; // +: 뜸, -: 파묻힘
+            // 폭주 방지: 보정 한계는 키의 절반
+            gap = Mathf.Clamp(gap, -_cc.height * 0.5f, _cc.height * 0.5f);
+
+            // 첫 측정(스폰 직후)과 구르기 복귀 직후엔 과도기 없이 즉시 스냅,
+            // 이후엔 스무딩 추적(순간적인 발 들림 보존)
+            if (!_feetOffsetInit || _wasRolling)
+            {
+                _feetOffset = gap;
+                _feetOffsetInit = true;
+                _wasRolling = false;
+            }
+            else
+            {
+                _feetOffset = Mathf.Lerp(_feetOffset, gap, groundFeetSpeed * Time.deltaTime);
+            }
+        }
+
+        if (Mathf.Abs(_feetOffset) > 1e-5f)
+            hips.position -= Vector3.up * _feetOffset;
     }
 
     /// <summary>현재 총의 실제 총열 방향(월드). 총 메시의 최장 로컬 축 기준, 부호는 캐릭터 전방 반구.</summary>

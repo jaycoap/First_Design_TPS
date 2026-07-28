@@ -23,6 +23,11 @@ public class PlayerShooter : MonoBehaviour
     [SerializeField] private float fireRate = 10f;      // 초당 발사 수
     [SerializeField] private float range = 200f;
     [SerializeField] private float damage = 15f;
+
+    [Header("탄약/재장전")]
+    [SerializeField] private int magazineSize = 35;
+    [Tooltip("애니메이터의 Reload 상태가 없을 때 사용하는 대체 재장전 시간(초).\n상태가 있으면 애니메이션 길이를 그대로 따른다.")]
+    [SerializeField] private float reloadTime = 2.5f;
     [Tooltip("조준(우클릭) 중일 때만 발사할지 여부")]
     [SerializeField] private bool requireAimToFire = true;
     [SerializeField] private LayerMask hitMask = ~0;
@@ -44,22 +49,54 @@ public class PlayerShooter : MonoBehaviour
     [SerializeField] private LineRenderer tracer;
     [SerializeField] private float tracerDuration = 0.03f;
 
+    [Tooltip("이펙트 크기 배율. 0이면 CharacterController 높이 기준으로 자동 계산(사람 1.8m 기준).")]
+    [SerializeField] private float fxScale = 0f;
+
     private float _nextFireTime;
     private float _tracerHideTime;
     private Vector3 _localBarrelAxis = Vector3.forward; // 총 로컬 총열 축(자동 판별)
     private Vector3 _gunBoundsCenter;                    // 총 로컬 바운즈 중심(총구 끝 계산용)
     private float _gunExtentAlong;                       // 총열 축 방향 절반 길이
     private bool _barrelResolved;
-    private ParticleSystem _autoFlash;                   // 자동 생성 총구 화염
+    private GunFx.MuzzleFx _muzzleFx;                    // 재사용형 총구 화염(자동 생성)
+    private GunFx.ImpactFx _impactFx;                    // 재사용형 탄착 FX
+    private float _fxScale;
+    private int _ammo;                                   // 현재 탄약
+    private bool _reloading;
+    private float _reloadStartTime;
+    private bool _reloadStateSeen;                       // 애니메이터 Reload 상태 진입 확인 여부
+    private PlayerStats _stats;                          // 명중 시 타임포스 획득용(지연 조회)
+    private int _upperLayerIdx = -2;                     // UpperBody 레이어(-2=미조회, -1=없음)
     private static readonly int FireHash = Animator.StringToHash("Fire");
+    private static readonly int ReloadHash = Animator.StringToHash("Reload");
+
+    /// <summary>현재 탄약 수(HUD 표시용).</summary>
+    public int CurrentAmmo => _ammo;
+    /// <summary>탄창 크기(HUD 표시용).</summary>
+    public int MagazineSize => magazineSize;
+    /// <summary>재장전 중 여부. PlayerController가 UpperBody 레이어 가중치에 사용.</summary>
+    public bool IsReloading => _reloading;
 
     private void Awake()
     {
         if (aimCamera == null) aimCamera = Camera.main;
         if (tpsCamera == null && aimCamera != null) tpsCamera = aimCamera.GetComponent<ThirdPersonCamera>();
         if (animator == null) animator = GetComponentInChildren<Animator>();
+
+        // 이펙트 배율: 캐릭터 키(CharacterController 높이)를 사람 1.8m에 대비해 환산
+        var cc = GetComponent<CharacterController>();
+        _fxScale = fxScale > 0f ? fxScale : (cc != null ? cc.height / 1.8f : 1f);
+
+        _ammo = magazineSize;
+
         if (tracer == null) tracer = CreateTracer(); // 지정 안 하면 자동 생성
         tracer.enabled = false;
+    }
+
+    private void OnDestroy()
+    {
+        // 탄착 FX 루트는 씬 최상위에 생성되므로 직접 정리
+        if (_impactFx != null && _impactFx.Root != null) Destroy(_impactFx.Root);
     }
 
     private void Update()
@@ -72,6 +109,12 @@ public class PlayerShooter : MonoBehaviour
             _nextFireTime = Time.time + 1f / Mathf.Max(0.01f, fireRate);
             Fire();
         }
+
+        // 수동 재장전(R). 자동 재장전은 탄 소진 시 Fire에서 발동
+        if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
+            StartReload();
+
+        UpdateReload();
 
         if (tracer != null && tracer.enabled && Time.time >= _tracerHideTime)
             tracer.enabled = false;
@@ -161,6 +204,11 @@ public class PlayerShooter : MonoBehaviour
 
     private void Fire()
     {
+        // 재장전 중엔 발사 불가, 탄이 없으면 자동 재장전
+        if (_reloading) return;
+        if (_ammo <= 0) { StartReload(); return; }
+        _ammo--;
+
         // 화면 중앙에서 카메라 정면으로 레이 발사(탄착 판정은 항상 크로스헤어와 일치)
         Ray ray = aimCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
         Vector3 targetPoint = ray.origin + ray.direction * range;
@@ -169,9 +217,15 @@ public class PlayerShooter : MonoBehaviour
         {
             targetPoint = hit.point;
 
-            // 데미지 전달
+            // 데미지 전달 + 명중 시 타임포스 획득
             var damageable = hit.collider.GetComponentInParent<IDamageable>();
-            damageable?.TakeDamage(damage, hit.point, hit.normal);
+            if (damageable != null)
+            {
+                damageable.TakeDamage(damage, hit.point, hit.normal);
+                if (_stats == null) _stats = GetComponent<PlayerStats>();
+                if (_stats != null && !ReferenceEquals(damageable, _stats))
+                    _stats.GainTimeForceOnHit();
+            }
 
             SpawnImpact(hit.point, hit.normal);
         }
@@ -188,12 +242,8 @@ public class PlayerShooter : MonoBehaviour
         }
         else
         {
-            if (_autoFlash == null)
-                _autoFlash = BuildBurstFx(transform, "MuzzleFlashFX",
-                    new Color(1f, 0.85f, 0.35f), life: 0.06f, size: 0.05f, count: 12, coneAngle: 25f,
-                    minSpeed: 2f, maxSpeed: 4f);
-            _autoFlash.transform.SetPositionAndRotation(muzzlePos, Quaternion.LookRotation(fireDir));
-            _autoFlash.Play();
+            _muzzleFx ??= GunFx.BuildMuzzleFlash(transform, _fxScale);
+            _muzzleFx.Fire(muzzlePos, fireDir);
         }
 
         // 트레이서(총구 → 탄착점)
@@ -208,9 +258,56 @@ public class PlayerShooter : MonoBehaviour
 
         if (animator != null && animator.runtimeAnimatorController != null)
             animator.SetTrigger(FireHash);
+
+        // 마지막 발을 쏘면 즉시 자동 재장전
+        if (_ammo <= 0) StartReload();
     }
 
-    /// <summary>탄착 이펙트: 프리팹이 있으면 사용, 없으면 스파크 버스트를 코드로 생성.</summary>
+    /// <summary>재장전 시작. UpperBody 레이어의 Reload 상태(모션)를 발동시킨다.</summary>
+    private void StartReload()
+    {
+        if (_reloading || _ammo >= magazineSize) return;
+        _reloading = true;
+        _reloadStartTime = Time.time;
+        _reloadStateSeen = false;
+        if (animator != null && animator.runtimeAnimatorController != null)
+            animator.SetTrigger(ReloadHash);
+    }
+
+    /// <summary>
+    /// 재장전 완료 감시. 애니메이터의 Reload 상태가 끝나는 시점(모션 길이 그대로)에 완료하고,
+    /// Reload 상태가 없는 구성이면 reloadTime 타이머로 대체한다.
+    /// </summary>
+    private void UpdateReload()
+    {
+        if (!_reloading) return;
+
+        float elapsed = Time.time - _reloadStartTime;
+        bool hasAnim = animator != null && animator.runtimeAnimatorController != null;
+        if (hasAnim && _upperLayerIdx == -2) _upperLayerIdx = animator.GetLayerIndex("UpperBody");
+
+        bool done;
+        if (hasAnim && _upperLayerIdx >= 0)
+        {
+            bool inState = animator.GetCurrentAnimatorStateInfo(_upperLayerIdx).IsName("Reload")
+                        || animator.GetNextAnimatorStateInfo(_upperLayerIdx).IsName("Reload");
+            if (inState) _reloadStateSeen = true;
+            // 상태 진입을 확인했으면 상태 종료 = 완료 / 진입을 못 봤으면(상태 미구성) 타이머로 대체
+            done = _reloadStateSeen ? !inState : elapsed >= reloadTime;
+        }
+        else
+        {
+            done = elapsed >= reloadTime;
+        }
+
+        if (done)
+        {
+            _reloading = false;
+            _ammo = magazineSize;
+        }
+    }
+
+    /// <summary>탄착 이펙트: 프리팹이 있으면 사용, 없으면 재사용형 스파크/먼지 FX를 코드로 생성.</summary>
     private void SpawnImpact(Vector3 pos, Vector3 normal)
     {
         if (impactPrefab != null)
@@ -219,12 +316,8 @@ public class PlayerShooter : MonoBehaviour
             Destroy(fx, 3f);
             return;
         }
-        var ps = BuildBurstFx(null, "ImpactFX",
-            new Color(1f, 0.8f, 0.45f), life: 0.25f, size: 0.03f, count: 16, coneAngle: 45f,
-            minSpeed: 0.8f, maxSpeed: 2f);
-        ps.transform.SetPositionAndRotation(pos, Quaternion.LookRotation(normal));
-        ps.Play();
-        Destroy(ps.gameObject, 1f);
+        _impactFx ??= GunFx.BuildImpact(_fxScale);
+        _impactFx.Spawn(pos, normal);
     }
 
     /// <summary>총구 위치(총 메시 바운즈의 총열 방향 끝)와 총열 방향(월드)을 구한다.</summary>
@@ -248,52 +341,21 @@ public class PlayerShooter : MonoBehaviour
         dir = aimCamera.transform.forward;
     }
 
-    /// <summary>1회 버스트 파티클 이펙트를 코드로 생성(에셋 불필요).</summary>
-    private static ParticleSystem BuildBurstFx(Transform parent, string name, Color color,
-        float life, float size, int count, float coneAngle, float minSpeed, float maxSpeed)
-    {
-        var go = new GameObject(name);
-        if (parent != null) go.transform.SetParent(parent, false);
-        var ps = go.AddComponent<ParticleSystem>();
-
-        var main = ps.main;
-        main.playOnAwake = false;
-        main.loop = false;
-        main.duration = life;
-        main.startLifetime = life;
-        main.startSpeed = new ParticleSystem.MinMaxCurve(minSpeed, maxSpeed);
-        main.startSize = new ParticleSystem.MinMaxCurve(size * 0.5f, size);
-        main.startColor = color;
-        main.simulationSpace = ParticleSystemSimulationSpace.World;
-        main.maxParticles = 64;
-
-        var emission = ps.emission;
-        emission.rateOverTime = 0f;
-        emission.SetBursts(new[] { new ParticleSystem.Burst(0f, (short)count) });
-
-        var shape = ps.shape;
-        shape.shapeType = ParticleSystemShapeType.Cone;
-        shape.angle = coneAngle;
-        shape.radius = 0.01f;
-
-        var renderer = go.GetComponent<ParticleSystemRenderer>();
-        renderer.material = new Material(Shader.Find("Sprites/Default"));
-        return ps;
-    }
-
-    /// <summary>노란 탄도선용 LineRenderer를 코드로 생성.</summary>
+    /// <summary>탄도선용 LineRenderer를 코드로 생성(가산 글로우, 캐릭터 스케일 반영).</summary>
     private LineRenderer CreateTracer()
     {
         var go = new GameObject("TracerFX");
         go.transform.SetParent(transform, false);
         var lr = go.AddComponent<LineRenderer>();
-        lr.material = new Material(Shader.Find("Sprites/Default"));
-        lr.startColor = new Color(1f, 0.9f, 0.4f, 1f);
-        lr.endColor = new Color(1f, 0.6f, 0.1f, 0.35f);
-        lr.startWidth = 0.015f;
-        lr.endWidth = 0.008f;
+        lr.sharedMaterial = GunFx.MakeTracerMaterial();
+        lr.startColor = new Color(1f, 0.9f, 0.5f, 0.9f);
+        lr.endColor = new Color(1f, 0.55f, 0.15f, 0.25f);
+        lr.startWidth = 0.05f * _fxScale;
+        lr.endWidth = 0.02f * _fxScale;
         lr.positionCount = 2;
         lr.numCapVertices = 2;
+        lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        lr.receiveShadows = false;
         lr.enabled = false;
         return lr;
     }

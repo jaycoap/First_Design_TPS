@@ -32,6 +32,7 @@ public static class PlayerAnimatorSetup
     private const string StartRunFbx = AnimDir + "Idle To Running.fbx"; // 출발 동작
     private const string RunFbx = AnimDir + "Rifle Run.fbx";           // 달리기 루프
     private const string RollFbx = AnimDir + "Running Dive Roll.fbx";   // 다이브 롤(C)
+    private const string ReloadFbx = AnimDir + "Reloading.fbx";          // 재장전(상체 레이어)
 
     private const float MoveThreshold = 0.1f; // Speed 이동 판정 임계값
 
@@ -52,11 +53,15 @@ public static class PlayerAnimatorSetup
             //    각 클립은 자기 스켈레톤에서 아바타를 생성(CreateFromThisModel)한다.
             //    mixamo 표준 스켈레톤은 자동 매핑되며, Player Animator가 Idle.fbx 아바타를
             //    쓰므로 런타임에 휴머노이드 리타게팅으로 정상 재생된다.
-            EnsureHumanoidClip(IdleFbx, loop: true);        // 대기 = 반복
-            EnsureHumanoidClip(WalkFbx, loop: true);        // 걷기 = 반복
-            EnsureHumanoidClip(StartRunFbx, loop: false);   // 출발 = 1회
-            EnsureHumanoidClip(RunFbx, loop: true);         // 달리기 = 반복
-            EnsureHumanoidClip(RollFbx, loop: false, bakeYToFeet: true); // 다이브 롤 = 1회, 발 지면 고정
+            // 모든 클립의 Y를 발 기준으로 포즈에 굽는다(bakeYToFeet).
+            // applyRootMotion=false라 루트 Y가 버려지는데, 원본(Original) 기준이면
+            // 믹사모 클립의 원본 Y 오프셋이 남아 캐릭터가 공중에 떠 보인다.
+            EnsureHumanoidClip(IdleFbx, loop: true, bakeYToFeet: true);      // 대기 = 반복
+            EnsureHumanoidClip(WalkFbx, loop: true, bakeYToFeet: true);      // 걷기 = 반복
+            EnsureHumanoidClip(StartRunFbx, loop: false, bakeYToFeet: true); // 출발 = 1회
+            EnsureHumanoidClip(RunFbx, loop: true, bakeYToFeet: true);       // 달리기 = 반복
+            EnsureHumanoidClip(RollFbx, loop: false, bakeYToFeet: true);     // 다이브 롤 = 1회
+            EnsureHumanoidClip(ReloadFbx, loop: false, bakeYToFeet: true);   // 재장전 = 1회(상체 전용)
 
             // 2) 클립 로드
             AnimationClip idleClip = LoadClip(IdleFbx);
@@ -64,6 +69,7 @@ public static class PlayerAnimatorSetup
             AnimationClip startRunClip = LoadClip(StartRunFbx);
             AnimationClip runClip = LoadClip(RunFbx);
             AnimationClip rollClip = LoadClip(RollFbx);
+            AnimationClip reloadClip = LoadClip(ReloadFbx);
             if (walkClip == null || startRunClip == null || runClip == null)
             {
                 Debug.LogError("[TPS-Anim] Walk Forward / Idle To Running / Rifle Run 클립을 로드하지 못했습니다.");
@@ -86,6 +92,7 @@ public static class PlayerAnimatorSetup
             controller.AddParameter("IsAiming", AnimatorControllerParameterType.Bool);
             controller.AddParameter("Roll", AnimatorControllerParameterType.Trigger);
             controller.AddParameter("Fire", AnimatorControllerParameterType.Trigger); // PlayerShooter가 발사 시 호출(경고 방지)
+            controller.AddParameter("Reload", AnimatorControllerParameterType.Trigger); // PlayerShooter가 재장전 시 호출
 
             // 루트 스테이트머신 상태 초기화
             var sm = controller.layers[0].stateMachine;
@@ -94,18 +101,24 @@ public static class PlayerAnimatorSetup
             sm.anyStateTransitions = new AnimatorStateTransition[0];
 
             // 4) 상태 생성
+            // Foot IK(iKOnFeet): 믹사모 리그 → 이 모델 아바타로 리타게팅될 때 생기는
+            // 발 높이 오차를 지면에 다시 심어 보정한다(발이 공중에 뜨는 문제 해결).
             var idle = sm.AddState("Idle", new Vector3(280, 60, 0));
             idle.motion = idleClip; // 대기 클립이 없으면 null(Idle 빈 상태)
+            idle.iKOnFeet = true;
 
             var walk = sm.AddState("Walk", new Vector3(500, 60, 0));
             walk.motion = walkClip;
+            walk.iKOnFeet = true;
 
             var startRun = sm.AddState("Idle To Running", new Vector3(720, 60, 0));
             startRun.motion = startRunClip;
             startRun.speed = 1.4f; // 출발 동작을 빠르게 재생해 달리기 진입을 앞당김
+            startRun.iKOnFeet = true;
 
             var run = sm.AddState("Rifle Run", new Vector3(940, 60, 0));
             run.motion = runClip;
+            run.iKOnFeet = true;
 
             sm.defaultState = idle;
 
@@ -202,7 +215,8 @@ public static class PlayerAnimatorSetup
 
             // 6) 상체(UpperBody) 오버라이드 레이어: 걷기 중에도 상체는 소총 파지 자세 유지.
             //    (Walk Forward가 맨손 걷기라 팔이 흔들려 총이 공중에 뜬 것처럼 보이는 문제 해결)
-            //    레이어 가중치는 PlayerController가 걷기 상태에서만 1로 올린다.
+            //    재장전(Reload)도 이 레이어에서 재생 → 대기/걷기/달리기 어느 상태든 모션 1개로 처리.
+            //    레이어 가중치는 PlayerController가 걷기 또는 재장전 중일 때 1로 올린다.
             while (controller.layers.Length > 1) controller.RemoveLayer(1); // 재실행 중복 방지
             var upperMask = LoadOrCreateUpperBodyMask();
             if (idleClip != null && upperMask != null)
@@ -211,6 +225,31 @@ public static class PlayerAnimatorSetup
                 AssetDatabase.AddObjectToAsset(usm, controller);
                 var hold = usm.AddState("Rifle Hold", new Vector3(280, 60, 0));
                 hold.motion = idleClip;
+
+                if (reloadClip != null)
+                {
+                    var reload = usm.AddState("Reload", new Vector3(500, 60, 0));
+                    reload.motion = reloadClip;
+
+                    // Rifle Hold → Reload : Reload 트리거(PlayerShooter가 발동)
+                    var tReload = hold.AddTransition(reload);
+                    tReload.hasExitTime = false;
+                    tReload.hasFixedDuration = true;
+                    tReload.duration = 0.1f;
+                    tReload.AddCondition(AnimatorConditionMode.If, 0f, "Reload");
+
+                    // Reload → Rifle Hold : 모션이 끝나면 복귀
+                    var tReloadEnd = reload.AddTransition(hold);
+                    tReloadEnd.hasExitTime = true;
+                    tReloadEnd.exitTime = 0.95f;
+                    tReloadEnd.hasFixedDuration = true;
+                    tReloadEnd.duration = 0.15f;
+                }
+                else
+                {
+                    Debug.LogWarning("[TPS-Anim] Reloading.fbx 클립을 로드하지 못해 재장전 상태를 건너뜁니다.");
+                }
+
                 controller.AddLayer(new AnimatorControllerLayer
                 {
                     name = "UpperBody",
@@ -400,6 +439,15 @@ public static class PlayerAnimatorSetup
             var rq = sso.FindProperty("requireAimToFire");
             if (rq != null) rq.boolValue = true;
             sso.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // 스탯(체력/기력/타임포스)과 HUD가 없으면 추가
+        if (!player.TryGetComponent<PlayerStats>(out _))
+            player.AddComponent<PlayerStats>();
+        if (Object.FindFirstObjectByType<HudUI>() == null)
+        {
+            var hud = new GameObject("GameHUD");
+            hud.AddComponent<HudUI>();
         }
 
         // 씬 저장
