@@ -450,6 +450,17 @@ public static class PlayerAnimatorSetup
             hud.AddComponent<HudUI>();
         }
 
+        // 시간 능력: 5초 전 고스트 + T 선택(좌=시간역행 / 우=시간공명)
+        if (!player.TryGetComponent<PlayerTimeGhost>(out _))
+            player.AddComponent<PlayerTimeGhost>();
+        if (!player.TryGetComponent<TimeShiftController>(out _))
+            player.AddComponent<TimeShiftController>();
+
+        // 시간역행 대상: 표적/적에 TimeRewindable 자동 부착(앞으로 만들 보스도 이 컴포넌트만 붙이면 됨)
+        foreach (var dummy in Object.FindObjectsByType<TargetDummy>(FindObjectsSortMode.None))
+            if (!dummy.TryGetComponent<TimeRewindable>(out _))
+                dummy.gameObject.AddComponent<TimeRewindable>();
+
         // 씬 저장
         var scene = player.scene;
         if (scene.IsValid())

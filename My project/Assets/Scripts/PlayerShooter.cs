@@ -77,6 +77,13 @@ public class PlayerShooter : MonoBehaviour
     /// <summary>재장전 중 여부. PlayerController가 UpperBody 레이어 가중치에 사용.</summary>
     public bool IsReloading => _reloading;
 
+    /// <summary>시간역행 적용: 탄약을 기록 시점 값으로 되돌린다(진행 중 재장전은 취소).</summary>
+    public void RewindAmmo(int ammo)
+    {
+        _ammo = Mathf.Clamp(ammo, 0, magazineSize);
+        _reloading = false;
+    }
+
     private void Awake()
     {
         if (aimCamera == null) aimCamera = Camera.main;
@@ -103,7 +110,8 @@ public class PlayerShooter : MonoBehaviour
     {
         if (Mouse.current == null || aimCamera == null) return;
 
-        bool canFire = !requireAimToFire || (tpsCamera != null && tpsCamera.IsAiming);
+        bool canFire = !TimeShiftController.DecisionActive // 시간 선택 모드 중엔 좌클릭이 '되감기'라 발사 금지
+                       && (!requireAimToFire || (tpsCamera != null && tpsCamera.IsAiming));
         if (canFire && Mouse.current.leftButton.isPressed && Time.time >= _nextFireTime)
         {
             _nextFireTime = Time.time + 1f / Mathf.Max(0.01f, fireRate);

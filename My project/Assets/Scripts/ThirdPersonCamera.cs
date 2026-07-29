@@ -77,7 +77,10 @@ public class ThirdPersonCamera : MonoBehaviour
         _pitch = Mathf.Clamp(_pitch, minPitch, maxPitch);
 
         // 우클릭 조준 상태 갱신
-        _isAiming = Mouse.current.rightButton.isPressed;
+        // 시간 선택 모드(우클릭=시간공명 선택)와 시간역행 재생 중엔 조준으로 처리하지 않는다
+        _isAiming = Mouse.current.rightButton.isPressed
+                    && !TimeShiftController.DecisionActive
+                    && !TimeShiftController.RewindActive;
     }
 
     private void LateUpdate()

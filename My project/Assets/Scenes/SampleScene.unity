@@ -605,6 +605,7 @@ GameObject:
   - component: {fileID: 1372761988}
   - component: {fileID: 1372761987}
   - component: {fileID: 1372761986}
+  - component: {fileID: 1372761991}
   m_Layer: 0
   m_Name: TargetDummy
   m_TagString: Untagged
@@ -720,6 +721,19 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1372761991
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1372761985}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 706cfd86f154f6849b64cfe9d290c86f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TimeRewindable
+  recordSeconds: 6.5
 --- !u!1 &1479108148 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: -8452115993790172194, guid: 655b152f7a8027745b937d34cd086858, type: 3}
@@ -772,6 +786,43 @@ MonoBehaviour:
   maxTimeForce: 100
   startTimeForce: 0
   timeForceRegenRate: 0
+  timeForceOnDodge: 1
+  timeForceOnHit: 1
+--- !u!114 &1702461517
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1702461504}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ee3c1d8897deb144b94e9e2b60105ef9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TimeShiftController
+  slowTimeScale: 0.2
+  decisionTimeout: 4
+  rewindCost: 30
+  supportCost: 30
+  rewindDuration: 1.2
+  supportDuration: 3
+  supportFireRate: 8
+  supportDamage: 10
+  supportRange: 200
+--- !u!114 &1702461518
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1702461504}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 37f55b2cdb7003a45a25a0e1b84ba059, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlayerTimeGhost
+  delay: 5
+  ghostColor: {r: 0.45, g: 0.85, b: 1, a: 0.35}
 --- !u!1001 &1937041709
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -860,7 +911,7 @@ PrefabInstance:
       objectReference: {fileID: 330585548}
     - target: {fileID: 317775143092253232, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: hitMask.m_Bits
-      value: 4294967039
+      value: 55
       objectReference: {fileID: 0}
     - target: {fileID: 317775143092253232, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: requireAimToFire
@@ -997,6 +1048,12 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 270255124678687992, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       insertIndex: -1
       addedObject: {fileID: 1702461510}
+    - targetCorrespondingSourceObject: {fileID: 270255124678687992, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1702461518}
+    - targetCorrespondingSourceObject: {fileID: 270255124678687992, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1702461517}
   m_SourcePrefab: {fileID: 100100000, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:

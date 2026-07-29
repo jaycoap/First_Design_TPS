@@ -104,6 +104,9 @@ public class PlayerController : MonoBehaviour
     /// <summary>다이브 롤 재생 중 여부(회피 판정용 — 롤 중 피격은 회피로 처리).</summary>
     public bool IsRolling => _rolling;
 
+    /// <summary>외부(시간 되감기 등)에서 텔레포트시킨 뒤 호출: 수직 속도 초기화.</summary>
+    public void OnTeleported() => _verticalVelocity = 0f;
+
     private void Update()
     {
         if (Keyboard.current == null) return;

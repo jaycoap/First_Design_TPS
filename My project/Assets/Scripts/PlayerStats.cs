@@ -98,6 +98,10 @@ public class PlayerStats : MonoBehaviour, IDamageable
     public void Heal(float amount)
         => _health = Mathf.Clamp(_health + amount, 0f, maxHealth);
 
+    /// <summary>시간역행 적용: 체력을 기록 시점 값으로 되돌린다(회복·감소 모두 가능).</summary>
+    public void RewindHealth(float health)
+        => _health = Mathf.Clamp(health, 0f, maxHealth);
+
     public void TakeDamage(float amount, Vector3 hitPoint, Vector3 hitNormal)
     {
         if (IsDead) return;
