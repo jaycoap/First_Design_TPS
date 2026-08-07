@@ -64,6 +64,7 @@ public class PlayerController : MonoBehaviour
     private float _runHoldTimer; // 이동 중 Shift 유지 시간 누적
     private bool _moving;              // 이번 프레임 이동 여부(조준 보정 판단용)
     private bool _rolling;             // 다이브 롤 재생 중(회전/조준 보정 잠금)
+    private bool _isRunning;           // 질주 중(외부 참조용)
     private float _aimBlend;           // 조준 보정 블렌드(0~1)
     private float _poseGunYawOffset;   // 포즈상 총열이 몸 정면에서 틀어진 요 각(자동 측정)
     private WeaponHolder _weaponHolder;
@@ -103,6 +104,9 @@ public class PlayerController : MonoBehaviour
 
     /// <summary>다이브 롤 재생 중 여부(회피 판정용 — 롤 중 피격은 회피로 처리).</summary>
     public bool IsRolling => _rolling;
+
+    /// <summary>질주 중 여부(카메라 속도감 연출에 사용).</summary>
+    public bool IsRunning => _isRunning;
 
     /// <summary>외부(시간 되감기 등)에서 텔레포트시킨 뒤 호출: 수직 속도 초기화.</summary>
     public void OnTeleported() => _verticalVelocity = 0f;
@@ -144,6 +148,7 @@ public class PlayerController : MonoBehaviour
         if (shiftRun) _runHoldTimer += Time.deltaTime;
         else _runHoldTimer = 0f;
         bool isRunning = shiftRun && _runHoldTimer >= runHoldTime;
+        _isRunning = isRunning;
 
         float speed = isAiming ? aimSpeed : (isRunning ? runSpeed : walkSpeed);
         Vector3 horizontal = moveDir * speed * inputMag;

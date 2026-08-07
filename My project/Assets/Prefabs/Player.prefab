@@ -49,7 +49,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       propertyPath: m_LocalPosition.y
-      value: 0.0655
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       propertyPath: m_LocalPosition.z
@@ -351,6 +351,10 @@ PrefabInstance:
       propertyPath: m_WarningMessage
       value: 
       objectReference: {fileID: 0}
+    - target: {fileID: 5866666021909216657, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      propertyPath: m_ApplyRootMotion
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 6240733294840144465, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       propertyPath: m_Layer
       value: 8
@@ -406,6 +410,15 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
       insertIndex: -1
       addedObject: {fileID: 317775143092253232}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 8707906454028670067}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 8322426690212209523}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 3938290274627670728}
   m_SourcePrefab: {fileID: 100100000, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
 --- !u!1 &270255124678687992 stripped
 GameObject:
@@ -430,10 +443,10 @@ CharacterController:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Height: 0.20104054
+  m_Height: 0.20104057
   m_Radius: 0.073474094
   m_SlopeLimit: 45
-  m_StepOffset: 0.060312163
+  m_StepOffset: 0.06031217
   m_SkinWidth: 0.0073474096
   m_MinMoveDistance: 0
   m_Center: {x: -0.0033803359, y: 0.09317287, z: -0.0015049204}
@@ -454,9 +467,9 @@ MonoBehaviour:
   weaponPrefab: {fileID: 9168056005385570339}
   existingWeapon: {fileID: 9168056005385570339}
   keepExistingPlacement: 1
-  localPosition: {x: 0, y: 0, z: 0}
-  localEulerAngles: {x: 0, y: 0, z: 0}
-  localScale: {x: 1, y: 1, z: 1}
+  localPosition: {x: 0.0006886062, y: 0.041112322, z: -0.0009744987}
+  localEulerAngles: {x: 84.873634, y: 351.69882, z: 73.1422}
+  localScale: {x: 0.6722774, y: 0.6722774, z: 0.6722774}
 --- !u!114 &1247531648929672563
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -471,12 +484,26 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerController
   tpsCamera: {fileID: 0}
   animator: {fileID: 6803777827033201720}
-  walkSpeed: 0.27922297
-  runSpeed: 0.61429054
-  aimSpeed: 0.22337838
+  walkSpeed: 0.27922302
+  runSpeed: 0.61429065
+  aimSpeed: 0.22337842
   rotationSpeed: 15
-  gravity: -2.2337837
-  jumpHeight: 0.13402703
+  runHoldTime: 0
+  rollSpeedMultiplier: 1.65
+  gravity: -2.2337842
+  jumpHeight: 0.13402706
+  groundFeet: 1
+  groundFeetSpeed: 8
+  aimMask:
+    serializedVersion: 2
+    m_Bits: 55
+  lookAtAim: 1
+  lookAtBodyWeight: 0.35
+  gunForwardAlign: 1
+  maxSpinePitch: 30
+  aimBlendSpeed: 8
+  aimYawTrim: 0
+  aimPitchTrim: 0
 --- !u!114 &317775143092253232
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -496,14 +523,77 @@ MonoBehaviour:
   fireRate: 10
   range: 200
   damage: 15
-  requireAimToFire: 0
+  magazineSize: 35
+  reloadTime: 2.5
+  requireAimToFire: 1
   hitMask:
     serializedVersion: 2
     m_Bits: 55
+  aimWeaponToCrosshair: 0
+  aimWeight: 1
+  barrelAxisOverride: {x: 0, y: 0, z: 0}
   muzzleFlash: {fileID: 0}
   impactPrefab: {fileID: 0}
   tracer: {fileID: 0}
   tracerDuration: 0.03
+  fxScale: 0
+--- !u!114 &8707906454028670067
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 270255124678687992}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1c3e0f14f70bd034dbfa056aeb1b5001, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlayerStats
+  maxHealth: 100
+  maxStamina: 100
+  rollStaminaCost: 30
+  staminaRegenRate: 25
+  staminaRegenDelay: 0.8
+  maxTimeForce: 100
+  startTimeForce: 0
+  timeForceRegenRate: 0
+  timeForceOnDodge: 1
+  timeForceOnHit: 1
+--- !u!114 &8322426690212209523
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 270255124678687992}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 37f55b2cdb7003a45a25a0e1b84ba059, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlayerTimeGhost
+  delay: 5
+  ghostColor: {r: 0.45, g: 0.85, b: 1, a: 0.35}
+--- !u!114 &3938290274627670728
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 270255124678687992}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ee3c1d8897deb144b94e9e2b60105ef9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TimeShiftController
+  slowTimeScale: 0.2
+  decisionTimeout: 4
+  rewindCost: 30
+  supportCost: 30
+  rewindDuration: 1.2
+  supportDuration: 3
+  supportFireRate: 8
+  supportDamage: 10
+  supportRange: 200
 --- !u!4 &1636186006574431841 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 1852576806548013000, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}

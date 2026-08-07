@@ -625,7 +625,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4e32ac010e3f15a4d9f51c4dad8c5cbc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TargetDummy
-  maxHealth: 50
+  maxHealth: 100000
   hitFlashColor: {r: 1, g: 0, b: 0, a: 1}
   flashDuration: 0.08
 --- !u!23 &1372761987
@@ -761,68 +761,6 @@ MeshCollider:
   m_Convex: 0
   m_CookingOptions: 30
   m_Mesh: {fileID: -8700343342553796975, guid: 655b152f7a8027745b937d34cd086858, type: 3}
---- !u!1 &1702461504 stripped
-GameObject:
-  m_CorrespondingSourceObject: {fileID: 270255124678687992, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-  m_PrefabInstance: {fileID: 1180613554649228762}
-  m_PrefabAsset: {fileID: 0}
---- !u!114 &1702461510
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1702461504}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1c3e0f14f70bd034dbfa056aeb1b5001, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::PlayerStats
-  maxHealth: 100
-  maxStamina: 100
-  rollStaminaCost: 30
-  staminaRegenRate: 25
-  staminaRegenDelay: 0.8
-  maxTimeForce: 100
-  startTimeForce: 0
-  timeForceRegenRate: 0
-  timeForceOnDodge: 1
-  timeForceOnHit: 1
---- !u!114 &1702461517
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1702461504}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: ee3c1d8897deb144b94e9e2b60105ef9, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::TimeShiftController
-  slowTimeScale: 0.2
-  decisionTimeout: 4
-  rewindCost: 30
-  supportCost: 30
-  rewindDuration: 1.2
-  supportDuration: 3
-  supportFireRate: 8
-  supportDamage: 10
-  supportRange: 200
---- !u!114 &1702461518
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1702461504}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 37f55b2cdb7003a45a25a0e1b84ba059, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::PlayerTimeGhost
-  delay: 5
-  ghostColor: {r: 0.45, g: 0.85, b: 1, a: 0.35}
 --- !u!1001 &1937041709
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -910,12 +848,8 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 330585548}
     - target: {fileID: 317775143092253232, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: hitMask.m_Bits
-      value: 55
-      objectReference: {fileID: 0}
-    - target: {fileID: 317775143092253232, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: requireAimToFire
-      value: 1
+      propertyPath: aimWeaponToCrosshair
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 615853188318488130, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: m_LocalPosition.x
@@ -958,102 +892,17 @@ PrefabInstance:
       value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: gravity
-      value: -2.2337842
-      objectReference: {fileID: 0}
-    - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: aimSpeed
-      value: 0.22337842
-      objectReference: {fileID: 0}
-    - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: runSpeed
-      value: 0.61429065
-      objectReference: {fileID: 0}
-    - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: tpsCamera
       value: 
       objectReference: {fileID: 330585548}
-    - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: walkSpeed
-      value: 0.27922302
-      objectReference: {fileID: 0}
-    - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: jumpHeight
-      value: 0.13402706
-      objectReference: {fileID: 0}
-    - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: aimMask.m_Bits
-      value: 4294967039
-      objectReference: {fileID: 0}
-    - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: rollSpeedMultiplier
-      value: 1.65
-      objectReference: {fileID: 0}
-    - target: {fileID: 3788739158390341402, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: m_Height
-      value: 0.20104057
-      objectReference: {fileID: 0}
-    - target: {fileID: 3788739158390341402, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: m_Center.y
-      value: 0.09317287
-      objectReference: {fileID: 0}
-    - target: {fileID: 3788739158390341402, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: m_StepOffset
-      value: 0.06031217
-      objectReference: {fileID: 0}
-    - target: {fileID: 6803777827033201720, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: m_ApplyRootMotion
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localScale.x
-      value: 0.6722774
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localScale.y
-      value: 0.6722774
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localScale.z
-      value: 0.6722774
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localPosition.x
-      value: 0.0006886062
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localPosition.y
-      value: 0.041112322
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localPosition.z
-      value: -0.0009744987
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localEulerAngles.x
-      value: 84.873634
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localEulerAngles.y
-      value: 351.69882
-      objectReference: {fileID: 0}
-    - target: {fileID: 7828523668214064230, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: localEulerAngles.z
-      value: 73.1422
+    - target: {fileID: 3938290274627670728, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      propertyPath: rewindDuration
+      value: 2.3
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
-    m_AddedComponents:
-    - targetCorrespondingSourceObject: {fileID: 270255124678687992, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      insertIndex: -1
-      addedObject: {fileID: 1702461510}
-    - targetCorrespondingSourceObject: {fileID: 270255124678687992, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      insertIndex: -1
-      addedObject: {fileID: 1702461518}
-    - targetCorrespondingSourceObject: {fileID: 270255124678687992, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      insertIndex: -1
-      addedObject: {fileID: 1702461517}
+    m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:

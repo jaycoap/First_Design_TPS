@@ -15,6 +15,14 @@ public class PlayerTimeGhost : MonoBehaviour
     [Tooltip("고스트 색(반투명)")]
     [SerializeField] private Color ghostColor = new Color(0.45f, 0.85f, 1f, 0.35f);
 
+    [Header("시간역행 잔상")]
+    [Tooltip("역행 중 잔상을 남길 간격(초). 작을수록 촘촘하다.")]
+    [SerializeField] private float afterimageInterval = 0.05f;
+    [Tooltip("잔상 하나가 사라지기까지의 시간(초)")]
+    [SerializeField] private float afterimageLife = 0.7f;
+    [Tooltip("잔상 색(알파가 시작 진하기)")]
+    [SerializeField] private Color afterimageColor = new Color(0.5f, 0.9f, 1f, 0.5f);
+
     private class Sample
     {
         public float t;
@@ -232,6 +240,7 @@ public class PlayerTimeGhost : MonoBehaviour
         float span = Mathf.Max(0.0001f, newest - Mathf.Max(oldest, newest - delay));
 
         float el = 0f;
+        float nextAfterimage = 0f;
         while (el < duration)
         {
             el += Time.deltaTime;
@@ -239,6 +248,13 @@ public class PlayerTimeGhost : MonoBehaviour
             float e = k * k * (3f - 2f * k); // easeInOut — 가속했다 감속하며 되감김
             var s = FindAtOrBefore(newest - span * e);
             if (s != null) ApplyToPlayer(s);
+
+            // 지나온 자리에 잔상을 남긴다(포즈 적용 직후라 현재 자세 그대로 구워진다)
+            if (el >= nextAfterimage)
+            {
+                nextAfterimage = el + Mathf.Max(0.01f, afterimageInterval);
+                SpawnAfterimage();
+            }
             yield return null;
         }
 
@@ -274,6 +290,58 @@ public class PlayerTimeGhost : MonoBehaviour
         return null;
     }
 
+    /// <summary>
+    /// 현재 포즈를 그대로 구워(BakeMesh) 제자리에 잔상으로 남긴다.
+    /// 캐릭터 하위의 모든 렌더러를 한 번에 훑어 상·하체(및 손에 든 총)가 빠짐없이 남는다.
+    /// 스키닝 메시는 현재 자세로 굽고, 일반 메시는 원본 메시를 참조만 한다.
+    /// (파티클/라인/트레일은 잔상 대상이 아니므로 제외)
+    /// </summary>
+    private void SpawnAfterimage()
+    {
+        foreach (var r in GetComponentsInChildren<Renderer>())
+        {
+            if (!r.enabled || r is ParticleSystemRenderer || r is LineRenderer || r is TrailRenderer)
+                continue;
+
+            if (r is SkinnedMeshRenderer smr)
+            {
+                if (smr.sharedMesh == null) continue;
+                var baked = new Mesh();
+                smr.BakeMesh(baked); // 렌더러 로컬 공간(스케일 미적용)으로 구움
+                MakeAfterimagePiece(baked, ownsMesh: true, smr.transform);
+            }
+            else if (r.TryGetComponent(out MeshFilter mf) && mf.sharedMesh != null)
+            {
+                MakeAfterimagePiece(mf.sharedMesh, ownsMesh: false, r.transform);
+            }
+        }
+    }
+
+    /// <summary>원본 렌더러의 월드 TRS를 그대로 복사해 잔상 조각을 만든다(위치·크기 어긋남 방지).</summary>
+    private void MakeAfterimagePiece(Mesh mesh, bool ownsMesh, Transform source)
+    {
+        var go = new GameObject("RewindAfterimage");
+        go.transform.SetPositionAndRotation(source.position, source.rotation);
+        go.transform.localScale = source.lossyScale;
+
+        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+        var mr = go.AddComponent<MeshRenderer>();
+
+        // 이 캐릭터는 부위별로 머티리얼이 나뉘어 있어 메시가 여러 서브메시를 갖는다.
+        // 슬롯 수만큼 채우지 않으면 서브메시 0번(몸통/팔)만 그려지고 머리·다리가 사라진다.
+        var mat = new Material(Shader.Find("Sprites/Default")) { color = afterimageColor };
+        int slots = Mathf.Max(1, mesh.subMeshCount);
+        var mats = new Material[slots];
+        for (int i = 0; i < slots; i++) mats[i] = mat; // 같은 인스턴스 공유 → 페이드/정리 1회
+        mr.sharedMaterials = mats;
+
+        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        mr.receiveShadows = false;
+
+        go.AddComponent<RewindAfterimage>()
+          .Init(mat, ownsMesh ? mesh : null, afterimageLife, afterimageColor);
+    }
+
     /// <summary>샘플의 루트 위치/회전 + 본 포즈를 플레이어 자신에게 적용(역재생용).</summary>
     private void ApplyToPlayer(Sample s)
     {
@@ -295,5 +363,42 @@ public class PlayerTimeGhost : MonoBehaviour
             if (f != null) return f;
         }
         return null;
+    }
+}
+
+/// <summary>시간역행 잔상 한 조각: 알파가 서서히 빠지고 사라진다(자기 머티리얼/메시 정리 포함).</summary>
+public class RewindAfterimage : MonoBehaviour
+{
+    private Material _mat;
+    private Mesh _ownedMesh;   // BakeMesh로 만든 것만 소유(총 메시는 원본 참조라 null)
+    private float _life = 0.7f;
+    private float _elapsed;
+    private Color _color;
+
+    public void Init(Material mat, Mesh ownedMesh, float life, Color color)
+    {
+        _mat = mat;
+        _ownedMesh = ownedMesh;
+        _life = Mathf.Max(0.05f, life);
+        _color = color;
+    }
+
+    private void Update()
+    {
+        _elapsed += Time.deltaTime;
+        float k = 1f - Mathf.Clamp01(_elapsed / _life);
+        if (_mat != null)
+        {
+            var c = _color;
+            c.a = _color.a * k * k; // 뒤로 갈수록 빠르게 옅어짐
+            _mat.color = c;
+        }
+        if (_elapsed >= _life) Destroy(gameObject);
+    }
+
+    private void OnDestroy()
+    {
+        if (_mat != null) Destroy(_mat);
+        if (_ownedMesh != null) Destroy(_ownedMesh);
     }
 }

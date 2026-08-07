@@ -26,8 +26,8 @@ public class TimeShiftController : MonoBehaviour
     [SerializeField] private float supportCost = 30f;
 
     [Header("시간역행 연출")]
-    [Tooltip("과거로 되감기는 모습이 보이는 시간(초). 플레이어와 월드(TimeRewindable)가 함께 역재생된다.")]
-    [SerializeField] private float rewindDuration = 1.2f;
+    [Tooltip("과거로 되감기는 모습이 보이는 시간(초). 플레이어와 월드(TimeRewindable)가 함께 역재생된다.\n길수록 잔상이 길게 늘어져 연출이 극적이다.")]
+    [SerializeField] private float rewindDuration = 2.5f;
 
     [Header("지원 사격")]
     [SerializeField] private float supportDuration = 3f;
@@ -46,6 +46,7 @@ public class TimeShiftController : MonoBehaviour
     private PlayerStats _stats;
     private CharacterController _cc;
     private Camera _cam;
+    private ThirdPersonCamera _tpsCam;
     private int _mask;
     private float _fxScale = 1f;
     private float _decisionEndRealtime;
@@ -69,6 +70,7 @@ public class TimeShiftController : MonoBehaviour
         _stats = GetComponent<PlayerStats>();
         _cc = GetComponent<CharacterController>();
         _cam = Camera.main;
+        _tpsCam = _cam != null ? _cam.GetComponent<ThirdPersonCamera>() : null;
         _mask = ~(1 << gameObject.layer); // 자기(플레이어/고스트) 레이어 제외
         if (_cc != null) _fxScale = _cc.height / 1.8f;
 
@@ -146,10 +148,21 @@ public class TimeShiftController : MonoBehaviour
         {
             _ghostImpactFx.Spawn(transform.position + Vector3.up * (_fxScale * 0.9f), Vector3.up); // 도착 이펙트
             RewindActive = false;
+            if (_tpsCam != null)
+            {
+                _tpsCam.SetRewindCinematic(false);
+                _tpsCam.AddShake(0.5f, 0.35f);   // 착지하듯 툭 떨어지는 마무리
+                _tpsCam.AddFovKick(-6f);
+            }
         });
         if (!started) return;
 
         RewindActive = true;
+        if (_tpsCam != null)
+        {
+            _tpsCam.SetRewindCinematic(true); // 물러나며 넓어지고 기울어짐
+            _tpsCam.AddShake(0.6f, 0.4f);     // 발동 순간의 충격
+        }
         TimeRewindable.RewindAll(_ghost.Delay, rewindDuration); // 월드(보스 패턴 등)도 함께 역행
     }
 
