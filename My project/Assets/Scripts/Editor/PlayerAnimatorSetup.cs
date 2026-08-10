@@ -229,10 +229,12 @@ public static class PlayerAnimatorSetup
                 var hold = usm.AddState("Rifle Hold", new Vector3(280, 60, 0));
                 hold.motion = idleClip;
 
+                AnimatorState reloadState = null;
                 if (reloadClip != null)
                 {
                     var reload = usm.AddState("Reload", new Vector3(500, 60, 0));
                     reload.motion = reloadClip;
+                    reloadState = reload;
 
                     // Rifle Hold → Reload : Reload 트리거(PlayerShooter가 발동)
                     var tReload = hold.AddTransition(reload);
@@ -271,6 +273,20 @@ public static class PlayerAnimatorSetup
                     tFireEnd.exitTime = 0.7f;
                     tFireEnd.hasFixedDuration = true;
                     tFireEnd.duration = 0.08f;
+
+                    // Fire → Reload : 마지막 발을 쏘면 자동 재장전이 걸리는데, 이 전환이 없으면
+                    // 발사 모션이 exitTime(0.7)까지 다 돌기를 기다린 뒤에야 재장전 모션이 시작된다.
+                    // 그 1초 남짓 동안 PlayerShooter는 Reload 상태 진입을 못 봐서 타이머 폴백으로
+                    // 재장전을 판정하게 되고, 결국 재장전 모션이 끝나기 전에 발사 잠금이 풀린다.
+                    // 아래 연사 전환보다 먼저 등록해야 Fire/Reload가 같이 걸렸을 때 재장전이 이긴다.
+                    if (reloadState != null)
+                    {
+                        var tFireReload = fire.AddTransition(reloadState);
+                        tFireReload.hasExitTime = false;
+                        tFireReload.hasFixedDuration = true;
+                        tFireReload.duration = 0.1f;
+                        tFireReload.AddCondition(AnimatorConditionMode.If, 0f, "Reload");
+                    }
 
                     // 연사: 발사 모션 중에도 Fire가 다시 오면 처음부터 재생
                     var tFireLoop = fire.AddTransition(fire);

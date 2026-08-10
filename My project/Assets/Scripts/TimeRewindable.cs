@@ -23,8 +23,15 @@ public class TimeRewindable : MonoBehaviour
         public bool valid;
     }
 
+    /// <summary>
+    /// 초당 기록 횟수. 버퍼 칸 수 ÷ 이 값 = 실제 보관 시간이므로 프레임마다 기록하면 안 된다
+    /// (fps가 높을수록 보관 시간이 짧아져 되감기가 recordSeconds만큼 거슬러 가지 못한다).
+    /// </summary>
+    private const float SampleRate = 90f;
+
     private Snap[] _buf;
     private int _head = -1, _count;
+    private float _nextSampleTime;
     private IRewindableExtra _extra;
     private static readonly List<TimeRewindable> All = new List<TimeRewindable>();
 
@@ -32,7 +39,8 @@ public class TimeRewindable : MonoBehaviour
 
     private void Awake()
     {
-        _buf = new Snap[Mathf.CeilToInt(recordSeconds * 90f)];
+        _buf = new Snap[Mathf.CeilToInt(recordSeconds * SampleRate)];
+        _nextSampleTime = Time.time;
         _extra = GetComponent<IRewindableExtra>();
     }
 
@@ -42,6 +50,11 @@ public class TimeRewindable : MonoBehaviour
     private void LateUpdate()
     {
         if (IsRewinding) return;
+
+        // 기록은 SampleRate로 제한 — 프레임마다 넣으면 고프레임에서 버퍼가 recordSeconds를 못 담는다
+        if (Time.time < _nextSampleTime) return;
+        _nextSampleTime = Mathf.Max(Time.time, _nextSampleTime + 1f / SampleRate);
+
         _head = (_head + 1) % _buf.Length;
         if (_count < _buf.Length) _count++;
         _buf[_head] = new Snap
@@ -107,6 +120,7 @@ public class TimeRewindable : MonoBehaviour
         }
         _head = -1;
         _count = 0;
+        _nextSampleTime = Time.time;
         for (int i = 0; i < _buf.Length; i++) _buf[i].valid = false;
         IsRewinding = false;
     }

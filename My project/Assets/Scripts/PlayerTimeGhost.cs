@@ -35,9 +35,17 @@ public class PlayerTimeGhost : MonoBehaviour
         public bool valid;
     }
 
+    /// <summary>
+    /// 초당 기록 횟수. 버퍼 칸 수를 이 값으로 나눈 만큼이 곧 보관 시간이 되므로,
+    /// 프레임마다 기록하면 안 된다 — fps가 이 값을 넘는 순간 버퍼가 delay초를 못 담아
+    /// '5초 전 샘플'을 영영 못 찾고 고스트가 나타나지 않는다(= T 능력 전체가 잠긴다).
+    /// </summary>
+    private const float SampleRate = 90f;
+
     private Sample[] _buf;
     private int _head = -1;
     private int _count;
+    private float _nextSampleTime;
 
     private GameObject _ghost;
     private Animator _ghostAnimator; // 지원 사격 중에만 켜서 조준/발사 모션 재생
@@ -92,10 +100,11 @@ public class PlayerTimeGhost : MonoBehaviour
         if (_srcBones.Length != _dstBones.Length)
             Debug.LogWarning($"[TimeGhost] 본 수 불일치(player {_srcBones.Length} vs ghost {_dstBones.Length}) — 공통 부분만 복사합니다.");
 
-        int cap = Mathf.CeilToInt((delay + 1.5f) * 90f); // 90fps 여유
+        int cap = Mathf.CeilToInt((delay + 1.5f) * SampleRate); // delay + 1.5초 분량
         _buf = new Sample[cap];
         for (int i = 0; i < cap; i++)
             _buf[i] = new Sample { lp = new Vector3[_boneCount], lr = new Quaternion[_boneCount] };
+        _nextSampleTime = Time.time;
 
         _stats = GetComponent<PlayerStats>();
         _shooter = GetComponent<PlayerShooter>();
@@ -148,21 +157,31 @@ public class PlayerTimeGhost : MonoBehaviour
     {
         if (_buf == null || IsRewinding) return; // 역재생 중엔 기록 중지(뒤로 가는 모습이 기록되면 안 됨)
 
-        // --- 기록(조준 보정까지 끝난 최종 포즈) ---
-        _head = (_head + 1) % _buf.Length;
-        if (_count < _buf.Length) _count++;
-        var s = _buf[_head];
-        s.t = Time.time;
-        s.pos = transform.position;
-        s.rot = transform.rotation;
-        for (int i = 0; i < _boneCount; i++)
+        // --- 기록(조준 보정까지 끝난 최종 포즈) — SampleRate로 제한 ---
+        // 재생은 매 프레임 하되 기록만 솎아낸다. 프레임마다 넣으면 고프레임에서
+        // 버퍼가 delay초를 못 담는다(위 SampleRate 주석 참고).
+        if (Time.time >= _nextSampleTime)
         {
-            s.lp[i] = _srcBones[i].localPosition;
-            s.lr[i] = _srcBones[i].localRotation;
+            // 누적 기준으로 다음 시각을 잡아 드리프트를 막고, 프레임이 크게 밀렸으면 현재 시각에 재동기화
+            _nextSampleTime = Mathf.Max(Time.time, _nextSampleTime + 1f / SampleRate);
+
+            _head = (_head + 1) % _buf.Length;
+            if (_count < _buf.Length) _count++;
+            var s = _buf[_head];
+            s.t = Time.time;
+            s.pos = transform.position;
+            s.rot = transform.rotation;
+            for (int i = 0; i < _boneCount; i++)
+            {
+                s.lp[i] = _srcBones[i].localPosition;
+                s.lr[i] = _srcBones[i].localRotation;
+            }
+            s.health = _stats != null ? _stats.Health : 0f;
+            s.ammo = _shooter != null ? _shooter.CurrentAmmo : 0;
+            s.valid = true;
         }
-        s.health = _stats != null ? _stats.Health : 0f;
-        s.ammo = _shooter != null ? _shooter.CurrentAmmo : 0;
-        s.valid = true;
+
+        if (_count == 0) return; // 아직 첫 샘플 전
 
         // --- 재생(지원 사격 중엔 현재 위치/포즈에 고정) ---
         if (_frozen) return;
@@ -206,6 +225,7 @@ public class PlayerTimeGhost : MonoBehaviour
     {
         _head = -1;
         _count = 0;
+        _nextSampleTime = Time.time; // 다음 프레임부터 곧바로 다시 쌓기 시작
         foreach (var s in _buf) s.valid = false;
         _shown = false;
         if (_ghost != null) _ghost.SetActive(false);
