@@ -30,10 +30,14 @@ public class TimeShiftController : MonoBehaviour
     [SerializeField] private float rewindDuration = 2.5f;
 
     [Header("지원 사격")]
+    [Tooltip("고스트 레이저 색(플레이어와 구분되도록 다른 색을 권장)")]
+    [SerializeField] private Color ghostLaserColor = new Color(0.7f, 0.5f, 1f);
     [SerializeField] private float supportDuration = 3f;
     [SerializeField] private float supportFireRate = 8f;
     [SerializeField] private float supportDamage = 10f;
     [SerializeField] private float supportRange = 200f;
+    [Tooltip("플레이어가 적을 겨누고 있지 않을 때, 고스트가 주변에서 적을 찾는 반경")]
+    [SerializeField] private float supportSearchRadius = 60f;
 
     /// <summary>선택 모드 중인가(전역). PlayerShooter/카메라가 참조해 입력 충돌을 막는다.</summary>
     public static bool DecisionActive { get; private set; }
@@ -44,6 +48,7 @@ public class TimeShiftController : MonoBehaviour
     private PlayerTimeGhost _ghost;
     private PlayerController _pc;
     private PlayerStats _stats;
+    private PlayerShooter _shooter;   // 총구 끝 계산을 공유(분신도 총구에서 발사)
     private CharacterController _cc;
     private Camera _cam;
     private ThirdPersonCamera _tpsCam;
@@ -68,6 +73,7 @@ public class TimeShiftController : MonoBehaviour
         _ghost = GetComponent<PlayerTimeGhost>();
         _pc = GetComponent<PlayerController>();
         _stats = GetComponent<PlayerStats>();
+        _shooter = GetComponent<PlayerShooter>();
         _cc = GetComponent<CharacterController>();
         _cam = Camera.main;
         _tpsCam = _cam != null ? _cam.GetComponent<ThirdPersonCamera>() : null;
@@ -75,8 +81,9 @@ public class TimeShiftController : MonoBehaviour
         if (_cc != null) _fxScale = _cc.height / 1.8f;
 
         _tracer = CreateGhostTracer();
-        _ghostMuzzleFx = GunFx.BuildMuzzleFlash(transform, _fxScale);
-        _ghostImpactFx = GunFx.BuildImpact(_fxScale);
+        // 고스트는 플레이어와 구분되는 보라빛 레이저
+        _ghostMuzzleFx = GunFx.BuildMuzzleFlash(transform, _fxScale, ghostLaserColor);
+        _ghostImpactFx = GunFx.BuildImpact(_fxScale, ghostLaserColor);
         BuildDecisionUI();
     }
 
@@ -176,43 +183,160 @@ public class TimeShiftController : MonoBehaviour
     private IEnumerator SupportFireRoutine()
     {
         _ghost.SetFrozen(true);
+        _ghost.SetGhostAnimating(true); // 과거 자세와 무관하게 총을 겨눈 모습으로
+
+        // 적을 하나 붙잡아 계속 조준한다. (플레이어 시선을 따라가면 시선을 돌릴 때마다
+        //  탄이 같이 빗나가서 '지원 사격'이 되지 않는다.)
+        Transform target = FindSupportTarget();
+
         float end = Time.time + supportDuration;
         var wait = new WaitForSeconds(1f / Mathf.Max(1f, supportFireRate));
         while (Time.time < end)
         {
-            FireFromGhost();
+            // 목표가 죽거나 사라지면 다음 적으로
+            if (target == null || !target.gameObject.activeInHierarchy)
+                target = FindSupportTarget();
+
+            // 매 발 다시 겨눈다 — 적이 움직여도 총구가 계속 따라간다
+            if (target != null) AimGhostAtTarget(AimPointOf(target));
+
+            FireFromGhost(target);
             yield return wait;
         }
+
+        // 지원 사격을 마친 과거의 나는 시간 속으로 사라진다.
+        // 히스토리를 비워야 (a) 흘러간 시간만큼 다른 자리로 순간이동하는 현상이 없고
+        // (b) 시간역행과 똑같이 5초간 재충전되는 쿨다운이 생긴다.
+        if (_ghost.TryGetGhostState(out Vector3 ghostPos, out _))
+            _ghostImpactFx.Spawn(ghostPos + Vector3.up * (_fxScale * 0.9f), Vector3.up);
+
+        _ghost.SetGhostAnimating(false);
         _ghost.SetFrozen(false);
+        _ghost.ClearHistory();
         _support = null;
     }
 
-    private void FireFromGhost()
+    /// <summary>
+    /// 지원 사격 목표 선정: 플레이어가 겨누고 있는 적을 우선하고,
+    /// 없으면 고스트에서 가장 가까운 적을 잡는다.
+    /// </summary>
+    private Transform FindSupportTarget()
+    {
+        // 1순위: 플레이어의 크로스헤어가 향하는 적(같이 싸우는 느낌)
+        if (_cam != null)
+        {
+            Ray center = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+            if (Physics.Raycast(center, out RaycastHit ch, supportRange, _mask, QueryTriggerInteraction.Ignore))
+            {
+                var aimed = ch.collider.GetComponentInParent<IDamageable>() as Component;
+                if (aimed != null && aimed.transform != transform) return aimed.transform;
+            }
+        }
+
+        // 2순위: 고스트 주변에서 가장 가까운 적
+        Vector3 from = _ghost.GhostGun != null ? _ghost.GhostGun.position : transform.position;
+        var hits = Physics.OverlapSphere(from, supportSearchRadius, _mask, QueryTriggerInteraction.Ignore);
+        Transform best = null;
+        float bestSqr = float.MaxValue;
+        foreach (var col in hits)
+        {
+            var comp = col.GetComponentInParent<IDamageable>() as Component;
+            if (comp == null) continue;
+            if (comp.transform == transform) continue; // 자기 자신 제외
+
+            float sqr = (comp.transform.position - from).sqrMagnitude;
+            if (sqr < bestSqr) { bestSqr = sqr; best = comp.transform; }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// 고스트가 목표를 '겨누는' 자세가 되도록 수평 회전시킨다.
+    /// 루트를 목표로 바로 돌리면 얼어붙은 포즈가 비스듬해서 몸이 딴 데를 보게 되므로,
+    /// 총열 방향이 목표를 향하도록 그 차이만큼만 돌린다(플레이어의 조준 정렬과 같은 방식).
+    /// 회전하면 총 위치도 함께 움직이므로 두 번 반복해 수렴시킨다.
+    /// </summary>
+    private void AimGhostAtTarget(Vector3 aim)
+    {
+        Transform gun = _ghost.GhostGun;
+        if (gun == null || _shooter == null)
+        {
+            _ghost.AimGhostAt(aim); // 총을 못 찾으면 루트 정렬로 폴백
+            return;
+        }
+
+        for (int i = 0; i < 2; i++)
+        {
+            if (!_shooter.TryResolveMuzzle(gun, aim - gun.position, out Vector3 tip, out Vector3 barrel))
+            {
+                _ghost.AimGhostAt(aim);
+                return;
+            }
+
+            Vector3 cur = new Vector3(barrel.x, 0f, barrel.z);
+            Vector3 want = aim - tip;
+            want.y = 0f;
+            if (cur.sqrMagnitude < 1e-6f || want.sqrMagnitude < 1e-6f) return;
+
+            float delta = Vector3.SignedAngle(cur, want, Vector3.up);
+            if (Mathf.Abs(delta) < 0.05f) break; // 이미 겨누고 있음
+            _ghost.RotateGhostYaw(delta);
+        }
+    }
+
+    /// <summary>조준점: 콜라이더 중심(피벗이 발밑인 모델에서도 몸통을 맞히도록).</summary>
+    private static Vector3 AimPointOf(Transform t)
+    {
+        if (t.TryGetComponent(out Collider col)) return col.bounds.center;
+        var child = t.GetComponentInChildren<Collider>();
+        return child != null ? child.bounds.center : t.position;
+    }
+
+    private void FireFromGhost(Transform target)
     {
         Transform gun = _ghost.GhostGun;
         if (gun == null || _cam == null) return;
 
-        // 목표 = 플레이어의 크로스헤어(화면 중앙) 지점
-        Ray center = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
-        Vector3 aim = Physics.Raycast(center, out RaycastHit ch, supportRange, _mask, QueryTriggerInteraction.Ignore)
-            ? ch.point
-            : center.origin + center.direction * supportRange;
+        // 목표: 잡아둔 적 → 없으면 플레이어 크로스헤어 지점
+        Vector3 aim;
+        if (target != null) aim = AimPointOf(target);
+        else
+        {
+            Ray center = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+            aim = Physics.Raycast(center, out RaycastHit ch, supportRange, _mask, QueryTriggerInteraction.Ignore)
+                ? ch.point
+                : center.origin + center.direction * supportRange;
+        }
 
+        // 발사 원점 = 고스트 총의 총구 끝(플레이어와 동일한 계산).
+        // 못 구하면 총 오브젝트 원점(그립)으로 폴백.
         Vector3 origin = gun.position;
+        if (_shooter != null && _shooter.TryResolveMuzzle(gun, aim - gun.position, out Vector3 tip, out _))
+            origin = tip;
+
         Vector3 dir = (aim - origin).normalized;
-        Vector3 target = origin + dir * supportRange;
+        Vector3 endPoint = origin + dir * supportRange;
+
         if (Physics.Raycast(origin, dir, out RaycastHit hit, supportRange, _mask, QueryTriggerInteraction.Ignore))
         {
-            target = hit.point;
+            endPoint = hit.point;
             hit.collider.GetComponentInParent<IDamageable>()?.TakeDamage(supportDamage, hit.point, hit.normal);
             _ghostImpactFx.Spawn(hit.point, hit.normal);
         }
+        else if (target != null)
+        {
+            // 레이가 빗나가도(얇은 콜라이더 등) 조준한 적에겐 확실히 명중시킨다
+            endPoint = aim;
+            target.GetComponentInParent<IDamageable>()?.TakeDamage(supportDamage, aim, -dir);
+            _ghostImpactFx.Spawn(aim, -dir);
+        }
 
+        _ghost.TriggerGhostFire(); // 발사 모션(상체)
         _ghostMuzzleFx.Fire(origin, dir);
         _tracer.enabled = true;
         _tracer.positionCount = 2;
         _tracer.SetPosition(0, origin);
-        _tracer.SetPosition(1, target);
+        _tracer.SetPosition(1, endPoint);
         _tracerHide = Time.unscaledTime + 0.04f;
     }
 
@@ -223,10 +347,12 @@ public class TimeShiftController : MonoBehaviour
         go.transform.SetParent(transform, false);
         var lr = go.AddComponent<LineRenderer>();
         lr.sharedMaterial = GunFx.MakeTracerMaterial();
-        lr.startColor = new Color(0.5f, 0.9f, 1f, 0.9f);
-        lr.endColor = new Color(0.3f, 0.7f, 1f, 0.25f);
-        lr.startWidth = 0.05f * _fxScale;
-        lr.endWidth = 0.02f * _fxScale;
+        // 굵기·색이 끝까지 일정해야 '광선'으로 보인다(탄도선처럼 가늘어지지 않게)
+        Color core = Color.Lerp(ghostLaserColor, Color.white, 0.7f);
+        lr.startColor = core;
+        lr.endColor = core;
+        lr.startWidth = 0.045f * _fxScale;
+        lr.endWidth = 0.045f * _fxScale;
         lr.positionCount = 2;
         lr.numCapVertices = 2;
         lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;

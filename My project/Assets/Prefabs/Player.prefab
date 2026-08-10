@@ -532,10 +532,20 @@ MonoBehaviour:
   aimWeaponToCrosshair: 0
   aimWeight: 1
   barrelAxisOverride: {x: 0, y: 0, z: 0}
+  recoilPitch: 1.1
+  recoilYaw: 0.35
+  recoilShake: 0.12
+  spreadBase: 0.12
+  spreadPerShot: 0.28
+  spreadMax: 2.2
+  spreadRecovery: 5
+  spreadRecoveryDelay: 0.12
+  aimSpreadMultiplier: 0.45
+  laserColor: {r: 0.35, g: 0.8, b: 1, a: 1}
+  beamDuration: 0.07
   muzzleFlash: {fileID: 0}
   impactPrefab: {fileID: 0}
   tracer: {fileID: 0}
-  tracerDuration: 0.03
   fxScale: 0
 --- !u!114 &8707906454028670067
 MonoBehaviour:
@@ -573,6 +583,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerTimeGhost
   delay: 5
   ghostColor: {r: 0.45, g: 0.85, b: 1, a: 0.35}
+  afterimageInterval: 0.09
+  afterimageLife: 0.7
+  afterimageColor: {r: 0.5, g: 0.9, b: 1, a: 0.5}
 --- !u!114 &3938290274627670728
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -589,11 +602,13 @@ MonoBehaviour:
   decisionTimeout: 4
   rewindCost: 30
   supportCost: 30
-  rewindDuration: 1.2
+  rewindDuration: 2.3
+  ghostLaserColor: {r: 0.7, g: 0.5, b: 1, a: 1}
   supportDuration: 3
   supportFireRate: 8
   supportDamage: 10
   supportRange: 200
+  supportSearchRadius: 60
 --- !u!4 &1636186006574431841 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 1852576806548013000, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}

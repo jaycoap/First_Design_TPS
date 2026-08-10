@@ -51,6 +51,10 @@ public class ThirdPersonCamera : MonoBehaviour
     [Tooltip("역행 연출이 들어오고 빠지는 속도")]
     [SerializeField] private float rewindBlendSpeed = 4f;
 
+    [Header("사격 반동")]
+    [Tooltip("반동이 원래 조준점으로 돌아오는 속도(클수록 빨리 복귀)")]
+    [SerializeField] private float recoilRecoverySpeed = 9f;
+
     [Header("역동 연출 - 흔들림")]
     [Tooltip("흔들림 진폭 기준(카메라 거리 대비 비율)")]
     [SerializeField] private float shakeScale = 0.35f;
@@ -72,6 +76,8 @@ public class ThirdPersonCamera : MonoBehaviour
     private float _rewindWeight;    // 역행 연출 가중치 0~1
     private bool _rewindActive;
     private float _noiseSeed;
+    private float _recoilPitch;     // 사격 반동(위로 들림). 0으로 복귀
+    private float _recoilYaw;       // 사격 반동(좌우 흔들림). 0으로 복귀
 
     /// <summary>다른 스크립트(발사/이동)에서 현재 카메라 조준 여부와 방향을 참조.</summary>
     public bool IsAiming => _isAiming;
@@ -95,6 +101,16 @@ public class ThirdPersonCamera : MonoBehaviour
 
     /// <summary>시간역행 연출 on/off — 물러나며 넓어지고 기울어진다.</summary>
     public void SetRewindCinematic(bool active) => _rewindActive = active;
+
+    /// <summary>
+    /// 사격 반동: 화면이 pitchUp(도)만큼 들리고 yaw(도)만큼 옆으로 밀렸다가 원래 조준점으로 복귀한다.
+    /// 조준 레이도 카메라 기준이라 반동 중엔 실제 탄착점도 함께 밀린다(진짜 반동).
+    /// </summary>
+    public void AddRecoil(float pitchUp, float yaw = 0f)
+    {
+        _recoilPitch -= pitchUp; // 이 카메라는 pitch 양수가 '내려다봄' → 들어올리려면 빼기
+        _recoilYaw += yaw;
+    }
 
     private void Start()
     {
@@ -149,9 +165,9 @@ public class ThirdPersonCamera : MonoBehaviour
         if (_cam != null)
             _cam.fieldOfView = Mathf.Lerp(_cam.fieldOfView, targetFov + _fovKick, t);
 
-        // 롤(기울기): 역행 연출 + 임펄스
+        // 롤(기울기): 역행 연출 + 임펄스 / 피치·요에는 사격 반동을 더한다
         float roll = rewindRoll * _rewindWeight + _rollKick;
-        Quaternion rotation = Quaternion.Euler(_pitch, _yaw, roll);
+        Quaternion rotation = Quaternion.Euler(_pitch + _recoilPitch, _yaw + _recoilYaw, roll);
         Vector3 pivot = target.position + Vector3.up * pivotHeight;
 
         // 어깨 오프셋을 카메라 회전 기준으로 적용
@@ -194,6 +210,11 @@ public class ThirdPersonCamera : MonoBehaviour
         float k = 1f - Mathf.Exp(-8f * dt);
         _fovKick = Mathf.Lerp(_fovKick, 0f, k);
         _rollKick = Mathf.Lerp(_rollKick, 0f, k);
+
+        // 사격 반동도 원래 조준점으로 복귀
+        float r = 1f - Mathf.Exp(-recoilRecoverySpeed * dt);
+        _recoilPitch = Mathf.Lerp(_recoilPitch, 0f, r);
+        _recoilYaw = Mathf.Lerp(_recoilYaw, 0f, r);
 
         _rewindWeight = Mathf.MoveTowards(_rewindWeight, _rewindActive ? 1f : 0f, rewindBlendSpeed * dt);
     }

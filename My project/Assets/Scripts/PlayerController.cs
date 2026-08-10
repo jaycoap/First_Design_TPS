@@ -216,8 +216,10 @@ public class PlayerController : MonoBehaviour
             if (_upperLayerIdx == -2) _upperLayerIdx = animator.GetLayerIndex("UpperBody");
             if (_upperLayerIdx >= 0)
             {
+                // 발사 직후엔 이동 여부와 무관하게 상체 레이어를 켜야 발사 모션이 보인다
                 bool reloading = _shooter != null && _shooter.IsReloading;
-                float target = (!_rolling && (reloading || (!isRunning && moving))) ? 1f : 0f;
+                bool firingRecently = _shooter != null && _shooter.FiredRecently;
+                float target = (!_rolling && (reloading || firingRecently || (!isRunning && moving))) ? 1f : 0f;
                 float w = Mathf.MoveTowards(animator.GetLayerWeight(_upperLayerIdx), target, 5f * Time.deltaTime);
                 animator.SetLayerWeight(_upperLayerIdx, w);
             }

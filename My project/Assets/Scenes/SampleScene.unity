@@ -314,6 +314,13 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 4294967039
   collisionRadius: 0.022114461
+  rewindFovBoost: 20
+  rewindDistanceMul: 1.6
+  rewindRoll: 7
+  rewindBlendSpeed: 4
+  recoilRecoverySpeed: 9
+  shakeScale: 0.35
+  shakeFrequency: 22
 --- !u!114 &330585549
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -328,12 +335,18 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Crosshair
   aimCamera: {fileID: 330585545}
   tpsCamera: {fileID: 330585548}
+  shooter: {fileID: 0}
   showOnlyWhenAiming: 1
   lineLength: 10
   gap: 6
   thickness: 2
   showCenterDot: 1
+  outline: 1
+  outlineWidth: 1.5
+  outlineColor: {r: 0, g: 0, b: 0, a: 0.75}
   aimGapMultiplier: 0.5
+  spreadFollowsBullets: 1
+  spreadSmooth: 14
   normalColor: {r: 1, g: 1, b: 1, a: 0.85}
   targetColor: {r: 1, g: 0.25, b: 0.25, a: 0.95}
   range: 200
@@ -847,10 +860,6 @@ PrefabInstance:
       propertyPath: tpsCamera
       value: 
       objectReference: {fileID: 330585548}
-    - target: {fileID: 317775143092253232, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: aimWeaponToCrosshair
-      value: 0
-      objectReference: {fileID: 0}
     - target: {fileID: 615853188318488130, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: m_LocalPosition.x
       value: 0
@@ -895,10 +904,6 @@ PrefabInstance:
       propertyPath: tpsCamera
       value: 
       objectReference: {fileID: 330585548}
-    - target: {fileID: 3938290274627670728, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
-      propertyPath: rewindDuration
-      value: 2.3
-      objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []

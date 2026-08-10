@@ -11,97 +11,110 @@ using UnityEngine.Rendering;
 public static class GunFx
 {
     private static Texture2D _glowTex;
-    private static Material _addMat;    // 가산(글로우: 섬광/스파크/트레이서)
-    private static Material _alphaMat;  // 알파(연기/먼지)
+    private static Material _addMat;    // 가산(레이저 빔·섬광·플라즈마 전부 발광체라 가산만 쓴다)
 
     // ---------- 공개 API ----------
 
-    /// <summary>총구 화염 FX(섬광+스파크+연기+광원). 재사용형 — Fire(pos, dir)로 발동.</summary>
-    public static MuzzleFx BuildMuzzleFlash(Transform parent, float scale)
+    /// <summary>
+    /// 레이저 총구 방출 FX(에너지 섬광 + 플라즈마 입자 + 확산 링 + 광원).
+    /// 재사용형 — Fire(pos, dir)로 발동. 화약 연출(연기)은 쓰지 않는다.
+    /// </summary>
+    public static MuzzleFx BuildMuzzleFlash(Transform parent, float scale, Color color)
     {
-        // 루트: 코어 섬광(밝은 글로우 카드 2장, 무작위 회전)
-        ParticleSystem core = NewSystem("MuzzleFlashFX", parent, AdditiveMat);
+        Color hot = HotCore(color); // 중심부는 흰빛에 가깝게 → 과열된 에너지 느낌
+
+        // 코어: 총구에서 터지는 에너지 섬광
+        ParticleSystem core = NewSystem("LaserMuzzleFX", parent, AdditiveMat);
         var main = core.main;
-        main.startLifetime = new ParticleSystem.MinMaxCurve(0.04f, 0.06f);
+        main.startLifetime = new ParticleSystem.MinMaxCurve(0.05f, 0.08f);
         main.startSpeed = 0f;
-        main.startSize = new ParticleSystem.MinMaxCurve(0.25f * scale, 0.45f * scale);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.3f * scale, 0.5f * scale);
         main.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
-        main.startColor = new Color(1f, 0.92f, 0.55f);
-        FadeOut(core, new Color(1f, 0.95f, 0.7f), new Color(1f, 0.5f, 0.1f));
+        main.startColor = hot;
+        FadeOut(core, hot, color);
 
-        // 스파크: 총구 방향 원뿔로 뻗는 늘어난 입자
-        ParticleSystem sparks = NewSystem("Sparks", core.transform, AdditiveMat);
+        // 플라즈마 입자: 총구 앞으로 빠르게 뻗는 에너지 조각(중력 없음 = 무게감 없는 빛)
+        ParticleSystem sparks = NewSystem("Plasma", core.transform, AdditiveMat);
         var sMain = sparks.main;
-        sMain.startLifetime = new ParticleSystem.MinMaxCurve(0.05f, 0.12f);
-        sMain.startSpeed = new ParticleSystem.MinMaxCurve(8f * scale, 14f * scale);
-        sMain.startSize = new ParticleSystem.MinMaxCurve(0.02f * scale, 0.04f * scale);
-        sMain.startColor = new Color(1f, 0.85f, 0.5f);
-        SetCone(sparks, 20f, 0.02f * scale);
-        Stretch(sparks, 6f);
-        FadeOut(sparks, Color.white, new Color(1f, 0.45f, 0.05f));
+        sMain.startLifetime = new ParticleSystem.MinMaxCurve(0.06f, 0.14f);
+        sMain.startSpeed = new ParticleSystem.MinMaxCurve(10f * scale, 18f * scale);
+        sMain.startSize = new ParticleSystem.MinMaxCurve(0.015f * scale, 0.035f * scale);
+        sMain.startColor = hot;
+        SetCone(sparks, 12f, 0.015f * scale); // 레이저답게 좁은 원뿔
+        Stretch(sparks, 8f);
+        FadeOut(sparks, Color.white, color);
 
-        // 연기: 천천히 퍼지며 사라지는 회색 퍼프
-        ParticleSystem smoke = NewSystem("Smoke", core.transform, AlphaMat);
-        var mMain = smoke.main;
-        mMain.startLifetime = new ParticleSystem.MinMaxCurve(0.35f, 0.6f);
-        mMain.startSpeed = new ParticleSystem.MinMaxCurve(0.6f * scale, 1.2f * scale);
-        mMain.startSize = new ParticleSystem.MinMaxCurve(0.1f * scale, 0.16f * scale);
-        mMain.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
-        mMain.startColor = new Color(0.55f, 0.55f, 0.55f, 0.25f);
-        SetCone(smoke, 25f, 0.02f * scale);
-        Grow(smoke, 2.5f);
-        FadeOut(smoke, new Color(0.6f, 0.6f, 0.6f), new Color(0.4f, 0.4f, 0.4f));
+        // 확산 링: 총구에서 옆으로 퍼지는 얇은 에너지 파문
+        ParticleSystem ring = NewSystem("EnergyRing", core.transform, AdditiveMat);
+        var rMain = ring.main;
+        rMain.startLifetime = new ParticleSystem.MinMaxCurve(0.12f, 0.18f);
+        rMain.startSpeed = new ParticleSystem.MinMaxCurve(1.5f * scale, 2.5f * scale);
+        rMain.startSize = new ParticleSystem.MinMaxCurve(0.06f * scale, 0.1f * scale);
+        rMain.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
+        rMain.startColor = color;
+        SetCone(ring, 88f, 0.01f * scale); // 거의 평면으로 퍼짐
+        Grow(ring, 2.2f);
+        FadeOut(ring, color, new Color(color.r, color.g, color.b, 0f));
 
-        // 총구 점광원: 발사 순간 확 켜졌다 꺼지는 펄스
+        // 총구 점광원: 발사 순간 레이저 색으로 확 켜졌다 꺼짐
         var light = core.gameObject.AddComponent<Light>();
         light.type = LightType.Point;
-        light.color = new Color(1f, 0.72f, 0.35f);
-        light.range = 2.5f * scale;
+        light.color = color;
+        light.range = 3f * scale;
         light.intensity = 0f;
         var pulse = core.gameObject.AddComponent<LightPulse>();
-        pulse.Init(light, peakIntensity: 3.5f, decayTime: 0.06f);
+        pulse.Init(light, peakIntensity: 4.5f, decayTime: 0.08f);
 
-        return new MuzzleFx(core, sparks, smoke, pulse);
+        return new MuzzleFx(core, sparks, ring, pulse);
     }
 
-    /// <summary>탄착 FX. 하나를 만들어 재사용한다 — Spawn(pos, normal)로 발동.</summary>
-    public static ImpactFx BuildImpact(float scale)
+    /// <summary>
+    /// 레이저 탄착 FX(에너지 작렬 + 튀는 플라즈마 + 확산 링).
+    /// 하나를 만들어 재사용한다 — Spawn(pos, normal)로 발동. 먼지/파편은 쓰지 않는다.
+    /// </summary>
+    public static ImpactFx BuildImpact(float scale, Color color)
     {
-        // 섬광
-        ParticleSystem flash = NewSystem("ImpactFX", null, AdditiveMat);
+        Color hot = HotCore(color);
+
+        // 작렬: 맞은 자리가 하얗게 타는 순간
+        ParticleSystem flash = NewSystem("LaserImpactFX", null, AdditiveMat);
         var fMain = flash.main;
-        fMain.startLifetime = 0.04f;
+        fMain.startLifetime = new ParticleSystem.MinMaxCurve(0.05f, 0.09f);
         fMain.startSpeed = 0f;
-        fMain.startSize = new ParticleSystem.MinMaxCurve(0.1f * scale, 0.16f * scale);
-        fMain.startColor = new Color(1f, 0.85f, 0.5f);
-        FadeOut(flash, new Color(1f, 0.9f, 0.6f), new Color(1f, 0.5f, 0.1f));
+        fMain.startSize = new ParticleSystem.MinMaxCurve(0.12f * scale, 0.2f * scale);
+        fMain.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
+        fMain.startColor = hot;
+        FadeOut(flash, hot, color);
 
-        // 스파크: 표면 법선 원뿔로 튀고 중력에 떨어지는 궤적
-        ParticleSystem sparks = NewSystem("Sparks", flash.transform, AdditiveMat);
+        // 튀는 플라즈마: 중력을 거의 받지 않고 빠르게 사라지는 빛 조각
+        ParticleSystem sparks = NewSystem("Plasma", flash.transform, AdditiveMat);
         var sMain = sparks.main;
-        sMain.startLifetime = new ParticleSystem.MinMaxCurve(0.2f, 0.45f);
-        sMain.startSpeed = new ParticleSystem.MinMaxCurve(2.5f * scale, 5.5f * scale);
-        sMain.startSize = new ParticleSystem.MinMaxCurve(0.015f * scale, 0.03f * scale);
-        sMain.startColor = new Color(1f, 0.8f, 0.45f);
-        sMain.gravityModifier = scale; // 미니 월드에 맞게 낙하 가속도 축소
-        SetCone(sparks, 40f, 0.01f * scale);
-        Stretch(sparks, 4f);
-        FadeOut(sparks, Color.white, new Color(0.9f, 0.3f, 0.02f));
+        sMain.startLifetime = new ParticleSystem.MinMaxCurve(0.12f, 0.28f);
+        sMain.startSpeed = new ParticleSystem.MinMaxCurve(3f * scale, 7f * scale);
+        sMain.startSize = new ParticleSystem.MinMaxCurve(0.012f * scale, 0.025f * scale);
+        sMain.startColor = hot;
+        sMain.gravityModifier = scale * 0.15f; // 거의 무중력 — 파편이 아니라 에너지
+        SetCone(sparks, 55f, 0.01f * scale);
+        Stretch(sparks, 6f);
+        FadeOut(sparks, Color.white, color);
 
-        // 먼지: 표면에서 피어오르는 퍼프
-        ParticleSystem dust = NewSystem("Dust", flash.transform, AlphaMat);
-        var dMain = dust.main;
-        dMain.startLifetime = new ParticleSystem.MinMaxCurve(0.3f, 0.55f);
-        dMain.startSpeed = new ParticleSystem.MinMaxCurve(0.7f * scale, 1.4f * scale);
-        dMain.startSize = new ParticleSystem.MinMaxCurve(0.08f * scale, 0.14f * scale);
-        dMain.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
-        dMain.startColor = new Color(0.5f, 0.46f, 0.4f, 0.35f);
-        SetCone(dust, 50f, 0.02f * scale);
-        Grow(dust, 2f);
-        FadeOut(dust, new Color(0.55f, 0.5f, 0.45f), new Color(0.4f, 0.38f, 0.35f));
+        // 충격 링: 표면을 따라 퍼지는 에너지 파문
+        ParticleSystem ring = NewSystem("EnergyRing", flash.transform, AdditiveMat);
+        var rMain = ring.main;
+        rMain.startLifetime = new ParticleSystem.MinMaxCurve(0.15f, 0.25f);
+        rMain.startSpeed = new ParticleSystem.MinMaxCurve(1.2f * scale, 2f * scale);
+        rMain.startSize = new ParticleSystem.MinMaxCurve(0.05f * scale, 0.09f * scale);
+        rMain.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
+        rMain.startColor = color;
+        SetCone(ring, 88f, 0.01f * scale);
+        Grow(ring, 2.5f);
+        FadeOut(ring, color, new Color(color.r, color.g, color.b, 0f));
 
-        return new ImpactFx(flash, sparks, dust);
+        return new ImpactFx(flash, sparks, ring);
     }
+
+    /// <summary>레이저 코어용: 채도를 낮춰 흰빛에 가깝게(과열된 중심부 표현).</summary>
+    private static Color HotCore(Color c) => Color.Lerp(c, Color.white, 0.65f);
 
     /// <summary>트레이서용 가산 글로우 머티리얼.</summary>
     public static Material MakeTracerMaterial() => AdditiveMat;
@@ -109,13 +122,13 @@ public static class GunFx
     /// <summary>재사용형 총구 화염 핸들. 위치/방향을 잡고 즉시 방출한다.</summary>
     public class MuzzleFx
     {
-        private readonly ParticleSystem _core, _sparks, _smoke;
+        private readonly ParticleSystem _core, _sparks, _ring;
         private readonly LightPulse _light;
         public GameObject Root => _core != null ? _core.gameObject : null;
 
-        internal MuzzleFx(ParticleSystem core, ParticleSystem sparks, ParticleSystem smoke, LightPulse light)
+        internal MuzzleFx(ParticleSystem core, ParticleSystem sparks, ParticleSystem ring, LightPulse light)
         {
-            _core = core; _sparks = sparks; _smoke = smoke; _light = light;
+            _core = core; _sparks = sparks; _ring = ring; _light = light;
         }
 
         public void Fire(Vector3 pos, Vector3 dir)
@@ -124,8 +137,8 @@ public static class GunFx
             _core.transform.SetPositionAndRotation(pos, Quaternion.LookRotation(dir));
             // Play/Stop 상태와 무관하게 항상 터지도록 직접 방출(연사 대응)
             _core.Emit(2);
-            _sparks.Emit(14);
-            _smoke.Emit(3);
+            _sparks.Emit(8);
+            _ring.Emit(1);
             if (_light != null) _light.Pulse();
         }
     }
@@ -133,12 +146,12 @@ public static class GunFx
     /// <summary>재사용형 탄착 FX 핸들. 위치/방향을 잡고 즉시 방출한다.</summary>
     public class ImpactFx
     {
-        private readonly ParticleSystem _flash, _sparks, _dust;
+        private readonly ParticleSystem _flash, _sparks, _ring;
         public GameObject Root => _flash != null ? _flash.gameObject : null;
 
-        internal ImpactFx(ParticleSystem flash, ParticleSystem sparks, ParticleSystem dust)
+        internal ImpactFx(ParticleSystem flash, ParticleSystem sparks, ParticleSystem ring)
         {
-            _flash = flash; _sparks = sparks; _dust = dust;
+            _flash = flash; _sparks = sparks; _ring = ring;
         }
 
         public void Spawn(Vector3 pos, Vector3 normal)
@@ -147,8 +160,8 @@ public static class GunFx
             // 월드 시뮬레이션이라 루트를 옮겨도 이미 방출된 입자는 제자리에 남는다
             _flash.transform.SetPositionAndRotation(pos, Quaternion.LookRotation(normal));
             _flash.Emit(1);
-            _sparks.Emit(16);
-            _dust.Emit(5);
+            _sparks.Emit(10);
+            _ring.Emit(1);
         }
     }
 
@@ -252,7 +265,6 @@ public static class GunFx
     // ---------- 머티리얼/텍스처 ----------
 
     private static Material AdditiveMat => _addMat != null ? _addMat : _addMat = MakeMat(additive: true);
-    private static Material AlphaMat => _alphaMat != null ? _alphaMat : _alphaMat = MakeMat(additive: false);
 
     private static Material MakeMat(bool additive)
     {

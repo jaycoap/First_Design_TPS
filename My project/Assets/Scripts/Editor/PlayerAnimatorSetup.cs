@@ -33,6 +33,7 @@ public static class PlayerAnimatorSetup
     private const string RunFbx = AnimDir + "Rifle Run.fbx";           // 달리기 루프
     private const string RollFbx = AnimDir + "Running Dive Roll.fbx";   // 다이브 롤(C)
     private const string ReloadFbx = AnimDir + "Reloading.fbx";          // 재장전(상체 레이어)
+    private const string FireFbx = AnimDir + "Aiming Firing Rifle.fbx";  // 발사(상체 레이어)
 
     private const float MoveThreshold = 0.1f; // Speed 이동 판정 임계값
 
@@ -62,6 +63,7 @@ public static class PlayerAnimatorSetup
             EnsureHumanoidClip(RunFbx, loop: true, bakeYToFeet: true);       // 달리기 = 반복
             EnsureHumanoidClip(RollFbx, loop: false, bakeYToFeet: true);     // 다이브 롤 = 1회
             EnsureHumanoidClip(ReloadFbx, loop: false, bakeYToFeet: true);   // 재장전 = 1회(상체 전용)
+            EnsureHumanoidClip(FireFbx, loop: false, bakeYToFeet: true);     // 발사 = 1회(상체 전용)
 
             // 2) 클립 로드
             AnimationClip idleClip = LoadClip(IdleFbx);
@@ -70,6 +72,7 @@ public static class PlayerAnimatorSetup
             AnimationClip runClip = LoadClip(RunFbx);
             AnimationClip rollClip = LoadClip(RollFbx);
             AnimationClip reloadClip = LoadClip(ReloadFbx);
+            AnimationClip fireClip = LoadClip(FireFbx);
             if (walkClip == null || startRunClip == null || runClip == null)
             {
                 Debug.LogError("[TPS-Anim] Walk Forward / Idle To Running / Rifle Run 클립을 로드하지 못했습니다.");
@@ -248,6 +251,37 @@ public static class PlayerAnimatorSetup
                 else
                 {
                     Debug.LogWarning("[TPS-Anim] Reloading.fbx 클립을 로드하지 못해 재장전 상태를 건너뜁니다.");
+                }
+
+                // 발사 모션: Fire 트리거로 한 번 재생 후 파지 자세로 복귀.
+                // 상체 레이어라 걷기/달리기 중에도 다리는 그대로 두고 상체만 반동을 준다.
+                if (fireClip != null)
+                {
+                    var fire = usm.AddState("Fire", new Vector3(500, 220, 0));
+                    fire.motion = fireClip;
+
+                    var tFire = hold.AddTransition(fire);
+                    tFire.hasExitTime = false;
+                    tFire.hasFixedDuration = true;
+                    tFire.duration = 0.04f;   // 즉발
+                    tFire.AddCondition(AnimatorConditionMode.If, 0f, "Fire");
+
+                    var tFireEnd = fire.AddTransition(hold);
+                    tFireEnd.hasExitTime = true;
+                    tFireEnd.exitTime = 0.7f;
+                    tFireEnd.hasFixedDuration = true;
+                    tFireEnd.duration = 0.08f;
+
+                    // 연사: 발사 모션 중에도 Fire가 다시 오면 처음부터 재생
+                    var tFireLoop = fire.AddTransition(fire);
+                    tFireLoop.hasExitTime = false;
+                    tFireLoop.hasFixedDuration = true;
+                    tFireLoop.duration = 0.03f;
+                    tFireLoop.AddCondition(AnimatorConditionMode.If, 0f, "Fire");
+                }
+                else
+                {
+                    Debug.LogWarning("[TPS-Anim] Aiming Firing Rifle.fbx 클립을 로드하지 못해 발사 상태를 건너뜁니다.");
                 }
 
                 controller.AddLayer(new AnimatorControllerLayer

@@ -43,17 +43,53 @@ public class PlayerShooter : MonoBehaviour
     [Tooltip("총열 방향(총 로컬 축) 수동 지정. (0,0,0)이면 메시로 자동 판별. 자동이 앞뒤/축이 틀리면 예: (0,0,1),(0,0,-1),(1,0,0) 등으로 지정.")]
     [SerializeField] private Vector3 barrelAxisOverride = Vector3.zero;
 
+    [Header("반동")]
+    [Tooltip("한 발당 화면이 들리는 각도(도). 조준점도 함께 밀렸다가 복귀한다.")]
+    [SerializeField] private float recoilPitch = 1.1f;
+    [Tooltip("한 발당 좌우로 밀리는 최대 각도(도). 매 발 랜덤 방향.")]
+    [SerializeField] private float recoilYaw = 0.35f;
+    [Tooltip("반동에 곁들이는 미세한 화면 흔들림(0이면 없음)")]
+    [SerializeField] private float recoilShake = 0.12f;
+
+    [Header("탄 퍼짐(Spread)")]
+    [Tooltip("기본 퍼짐 반각(도). 쏘지 않을 때의 최소 퍼짐.")]
+    [SerializeField] private float spreadBase = 0.12f;
+    [Tooltip("한 발마다 늘어나는 퍼짐(도)")]
+    [SerializeField] private float spreadPerShot = 0.28f;
+    [Tooltip("퍼짐 상한(도)")]
+    [SerializeField] private float spreadMax = 2.2f;
+    [Tooltip("초당 회복량(도/초). 클수록 빨리 조여든다.")]
+    [SerializeField] private float spreadRecovery = 5f;
+    [Tooltip("마지막 발사 후 회복이 시작되기까지의 지연(초).\n0이면 연사 중 증가분과 회복이 상쇄돼 퍼짐이 늘지 않는다.")]
+    [SerializeField] private float spreadRecoveryDelay = 0.12f;
+    [Tooltip("조준(우클릭) 중 퍼짐 배율. 1이면 조준해도 동일.")]
+    [SerializeField] private float aimSpreadMultiplier = 0.45f;
+
+    [Header("레이저 이펙트")]
+    [Tooltip("레이저 빔·총구 방출·탄착에 공통으로 쓰이는 색")]
+    [SerializeField] private Color laserColor = new Color(0.35f, 0.8f, 1f);
+    [Tooltip("빔이 화면에 남아있는 시간(초). 길수록 광선처럼 이어져 보인다.")]
+    [SerializeField] private float beamDuration = 0.07f;
+
     [Header("이펙트(선택)")]
+    [Tooltip("직접 만든 총구 FX. 비우면 GunFx가 레이저 방출 FX를 자동 생성.")]
     [SerializeField] private ParticleSystem muzzleFlash;
+    [Tooltip("직접 만든 탄착 프리팹. 비우면 GunFx가 레이저 탄착 FX를 자동 생성.")]
     [SerializeField] private GameObject impactPrefab;
+    [Tooltip("빔 코어용 LineRenderer. 비우면 자동 생성. 표시 시간은 위의 Beam Duration.")]
     [SerializeField] private LineRenderer tracer;
-    [SerializeField] private float tracerDuration = 0.03f;
 
     [Tooltip("이펙트 크기 배율. 0이면 CharacterController 높이 기준으로 자동 계산(사람 1.8m 기준).")]
     [SerializeField] private float fxScale = 0f;
 
     private float _nextFireTime;
+    private float _lastFireTime = -99f;                  // 발사 모션 유지 판정용
+    private const float fireMotionHold = 0.35f;          // 마지막 발사 후 상체 레이어를 켜둘 시간(초)
     private float _tracerHideTime;
+    private PlayerController _controller;                // 구르기 중 발사 차단 판정용
+    private LineRenderer _beamGlow;                      // 빔 바깥 글로우 레이어
+    private float _spread;                               // 현재 퍼짐 반각(도) — 발사로 누적, 시간으로 회복
+    private float _spreadHoldUntil;                      // 이 시각까지는 회복 보류(연사 중 상쇄 방지)
     private Vector3 _localBarrelAxis = Vector3.forward; // 총 로컬 총열 축(자동 판별)
     private Vector3 _gunBoundsCenter;                    // 총 로컬 바운즈 중심(총구 끝 계산용)
     private float _gunExtentAlong;                       // 총열 축 방향 절반 길이
@@ -77,6 +113,22 @@ public class PlayerShooter : MonoBehaviour
     /// <summary>재장전 중 여부. PlayerController가 UpperBody 레이어 가중치에 사용.</summary>
     public bool IsReloading => _reloading;
 
+    /// <summary>최근에 발사했는가(발사 모션이 재생될 동안). UpperBody 레이어를 켜두는 데 쓴다.</summary>
+    public bool FiredRecently => Time.time - _lastFireTime < fireMotionHold;
+
+    /// <summary>
+    /// 현재 탄 퍼짐 반각(도). 실제 발사 방향이 이 원뿔 안에서 흩어지며,
+    /// Crosshair가 같은 값을 읽어 벌어짐을 그리므로 조준선과 탄착 범위가 정확히 일치한다.
+    /// </summary>
+    public float CurrentSpreadDegrees
+    {
+        get
+        {
+            float mul = (tpsCamera != null && tpsCamera.IsAiming) ? aimSpreadMultiplier : 1f;
+            return _spread * mul;
+        }
+    }
+
     /// <summary>시간역행 적용: 탄약을 기록 시점 값으로 되돌린다(진행 중 재장전은 취소).</summary>
     public void RewindAmmo(int ammo)
     {
@@ -89,15 +141,18 @@ public class PlayerShooter : MonoBehaviour
         if (aimCamera == null) aimCamera = Camera.main;
         if (tpsCamera == null && aimCamera != null) tpsCamera = aimCamera.GetComponent<ThirdPersonCamera>();
         if (animator == null) animator = GetComponentInChildren<Animator>();
+        _controller = GetComponent<PlayerController>();
 
         // 이펙트 배율: 캐릭터 키(CharacterController 높이)를 사람 1.8m에 대비해 환산
         var cc = GetComponent<CharacterController>();
         _fxScale = fxScale > 0f ? fxScale : (cc != null ? cc.height / 1.8f : 1f);
 
         _ammo = magazineSize;
+        _spread = spreadBase;
 
         if (tracer == null) tracer = CreateTracer(); // 지정 안 하면 자동 생성
         tracer.enabled = false;
+        _beamGlow = CreateBeamGlow();
     }
 
     private void OnDestroy()
@@ -110,7 +165,12 @@ public class PlayerShooter : MonoBehaviour
     {
         if (Mouse.current == null || aimCamera == null) return;
 
+        // 구르기 모션이 완전히 끝날 때까지 발사 금지(다이브 중 사격 방지).
+        // IsRolling은 롤에서 빠져나오는 블렌드가 끝날 때까지 true를 유지한다.
+        bool rolling = _controller != null && _controller.IsRolling;
+
         bool canFire = !TimeShiftController.DecisionActive // 시간 선택 모드 중엔 좌클릭이 '되감기'라 발사 금지
+                       && !rolling
                        && (!requireAimToFire || (tpsCamera != null && tpsCamera.IsAiming));
         if (canFire && Mouse.current.leftButton.isPressed && Time.time >= _nextFireTime)
         {
@@ -124,8 +184,15 @@ public class PlayerShooter : MonoBehaviour
 
         UpdateReload();
 
+        // 퍼짐 회복: 마지막 발사 후 잠깐 뒤부터 기본값으로 조여든다
+        if (_spread > spreadBase && Time.time >= _spreadHoldUntil)
+            _spread = Mathf.Max(spreadBase, _spread - spreadRecovery * Time.deltaTime);
+
         if (tracer != null && tracer.enabled && Time.time >= _tracerHideTime)
+        {
             tracer.enabled = false;
+            if (_beamGlow != null) _beamGlow.enabled = false;
+        }
     }
 
     // 애니메이션(손 포즈) 이후에 총을 크로스헤어 지점으로 정렬 → 조준 포즈의 총구 어긋남 보정
@@ -217,8 +284,10 @@ public class PlayerShooter : MonoBehaviour
         if (_ammo <= 0) { StartReload(); return; }
         _ammo--;
 
-        // 화면 중앙에서 카메라 정면으로 레이 발사(탄착 판정은 항상 크로스헤어와 일치)
+        // 화면 중앙에서 카메라 정면으로 레이 발사. 현재 퍼짐만큼 원뿔 안에서 방향이 흩어진다
+        // (크로스헤어가 같은 값으로 벌어지므로 탄착 범위와 조준선이 일치)
         Ray ray = aimCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+        ray.direction = ApplySpread(ray.direction);
         Vector3 targetPoint = ray.origin + ray.direction * range;
         bool didHit = Physics.Raycast(ray, out RaycastHit hit, range, hitMask, QueryTriggerInteraction.Ignore);
         if (didHit)
@@ -250,22 +319,41 @@ public class PlayerShooter : MonoBehaviour
         }
         else
         {
-            _muzzleFx ??= GunFx.BuildMuzzleFlash(transform, _fxScale);
+            _muzzleFx ??= GunFx.BuildMuzzleFlash(transform, _fxScale, laserColor);
             _muzzleFx.Fire(muzzlePos, fireDir);
         }
 
-        // 트레이서(총구 → 탄착점)
+        // 레이저 빔(총구 → 탄착점): 흰 코어 + 색 글로우 두 겹
         if (tracer != null)
         {
             tracer.enabled = true;
             tracer.positionCount = 2;
             tracer.SetPosition(0, muzzlePos);
             tracer.SetPosition(1, targetPoint);
-            _tracerHideTime = Time.time + tracerDuration;
+            if (_beamGlow != null)
+            {
+                _beamGlow.enabled = true;
+                _beamGlow.positionCount = 2;
+                _beamGlow.SetPosition(0, muzzlePos);
+                _beamGlow.SetPosition(1, targetPoint);
+            }
+            _tracerHideTime = Time.time + beamDuration;
         }
 
+        _lastFireTime = Time.time;
         if (animator != null && animator.runtimeAnimatorController != null)
             animator.SetTrigger(FireHash);
+
+        // 반동: 총구가 들리며 조준점이 살짝 밀렸다가 복귀
+        if (tpsCamera != null)
+        {
+            tpsCamera.AddRecoil(recoilPitch, Random.Range(-recoilYaw, recoilYaw));
+            if (recoilShake > 0f) tpsCamera.AddShake(recoilShake, 0.1f);
+        }
+
+        // 쏠수록 퍼짐 누적(상한까지). 멈추고 잠깐 뒤부터 Update에서 회복된다.
+        _spread = Mathf.Min(spreadMax, _spread + spreadPerShot);
+        _spreadHoldUntil = Time.time + spreadRecoveryDelay;
 
         // 마지막 발을 쏘면 즉시 자동 재장전
         if (_ammo <= 0) StartReload();
@@ -275,11 +363,27 @@ public class PlayerShooter : MonoBehaviour
     private void StartReload()
     {
         if (_reloading || _ammo >= magazineSize) return;
+        if (_controller != null && _controller.IsRolling) return; // 구르는 중엔 시작하지 않음
         _reloading = true;
         _reloadStartTime = Time.time;
         _reloadStateSeen = false;
         if (animator != null && animator.runtimeAnimatorController != null)
             animator.SetTrigger(ReloadHash);
+    }
+
+    /// <summary>
+    /// 재장전 취소(구르기로 중단). 탄약은 채워지지 않으며, 상체 레이어를 파지 자세로 되돌려
+    /// 구르기가 끝난 뒤 재장전 모션의 뒷부분이 이어서 재생되지 않게 한다.
+    /// </summary>
+    private void CancelReload()
+    {
+        _reloading = false;
+        _reloadStateSeen = false;
+        if (animator == null || animator.runtimeAnimatorController == null) return;
+
+        animator.ResetTrigger(ReloadHash);
+        if (_upperLayerIdx == -2) _upperLayerIdx = animator.GetLayerIndex("UpperBody");
+        if (_upperLayerIdx >= 0) animator.Play("Rifle Hold", _upperLayerIdx, 0f);
     }
 
     /// <summary>
@@ -289,6 +393,10 @@ public class PlayerShooter : MonoBehaviour
     private void UpdateReload()
     {
         if (!_reloading) return;
+
+        // 구르기로 재장전 중단 — 탄약은 채워지지 않는다.
+        // (레이어 가중치만 0이 되면 상태머신은 계속 돌아 재장전이 완료돼 버린다)
+        if (_controller != null && _controller.IsRolling) { CancelReload(); return; }
 
         float elapsed = Time.time - _reloadStartTime;
         bool hasAnim = animator != null && animator.runtimeAnimatorController != null;
@@ -316,6 +424,20 @@ public class PlayerShooter : MonoBehaviour
     }
 
     /// <summary>탄착 이펙트: 프리팹이 있으면 사용, 없으면 재사용형 스파크/먼지 FX를 코드로 생성.</summary>
+    /// <summary>
+    /// 발사 방향을 현재 퍼짐 반각의 원뿔 안으로 흩뜨린다.
+    /// 원 안에서 균일하게 뽑아, 화면상 탄착이 크로스헤어가 그리는 원 안에 고르게 분포한다.
+    /// </summary>
+    private Vector3 ApplySpread(Vector3 dir)
+    {
+        float sp = CurrentSpreadDegrees;
+        if (sp <= 0.001f) return dir;
+
+        Vector2 r = Random.insideUnitCircle * Mathf.Tan(sp * Mathf.Deg2Rad);
+        Transform camT = aimCamera.transform;
+        return (dir + camT.right * r.x + camT.up * r.y).normalized;
+    }
+
     private void SpawnImpact(Vector3 pos, Vector3 normal)
     {
         if (impactPrefab != null)
@@ -324,44 +446,80 @@ public class PlayerShooter : MonoBehaviour
             Destroy(fx, 3f);
             return;
         }
-        _impactFx ??= GunFx.BuildImpact(_fxScale);
+        _impactFx ??= GunFx.BuildImpact(_fxScale, laserColor);
         _impactFx.Spawn(pos, normal);
     }
 
-    /// <summary>총구 위치(총 메시 바운즈의 총열 방향 끝)와 총열 방향(월드)을 구한다.</summary>
+    /// <summary>플레이어 총의 총구 끝과 총열 방향(월드).</summary>
     private void GetMuzzle(out Vector3 pos, out Vector3 dir)
     {
         Transform gun = muzzlePoint != null ? muzzlePoint.parent : null;
-        if (gun != null)
-        {
-            if (!_barrelResolved)
-            {
-                _localBarrelAxis = ResolveLocalBarrelAxis(gun);
-                _barrelResolved = true;
-            }
-            Vector3 axisW = gun.rotation * _localBarrelAxis;
-            float sign = Vector3.Dot(axisW, transform.forward) < 0f ? -1f : 1f; // 총구는 항상 앞 반구
-            pos = gun.TransformPoint(_gunBoundsCenter + _localBarrelAxis * (_gunExtentAlong * sign));
-            dir = axisW * sign;
-            return;
-        }
+        if (gun != null && TryResolveMuzzle(gun, transform.forward, out pos, out dir)) return;
+
         pos = muzzlePoint != null ? muzzlePoint.position : aimCamera.transform.position;
         dir = aimCamera.transform.forward;
     }
 
-    /// <summary>탄도선용 LineRenderer를 코드로 생성(가산 글로우, 캐릭터 스케일 반영).</summary>
+    /// <summary>
+    /// 임의의 총 Transform에 대해 총구 끝(메시 바운즈의 총열 방향 끝)과 총열 방향을 구한다.
+    /// 고스트의 복제 총도 같은 모델이라 로컬 기하가 동일하므로 그대로 적용된다
+    /// → 플레이어와 분신이 똑같이 총구 끝에서 발사된다.
+    /// forwardRef는 총열의 앞뒤를 판별하는 기준 방향(보통 쏘려는 방향).
+    /// </summary>
+    public bool TryResolveMuzzle(Transform gun, Vector3 forwardRef, out Vector3 pos, out Vector3 dir)
+    {
+        pos = default; dir = default;
+        if (gun == null) return false;
+
+        if (!_barrelResolved)
+        {
+            _localBarrelAxis = ResolveLocalBarrelAxis(gun);
+            _barrelResolved = true;
+        }
+        Vector3 axisW = gun.rotation * _localBarrelAxis;
+        float sign = Vector3.Dot(axisW, forwardRef) < 0f ? -1f : 1f; // 총구는 항상 쏘려는 쪽
+        pos = gun.TransformPoint(_gunBoundsCenter + _localBarrelAxis * (_gunExtentAlong * sign));
+        dir = axisW * sign;
+        return true;
+    }
+
+    /// <summary>
+    /// 레이저 빔용 LineRenderer 생성. 굵기가 일정하고 색이 끝까지 유지돼
+    /// '날아가는 탄'이 아니라 '이어진 광선'으로 보인다. 바깥 글로우 레이어는 CreateBeamGlow가 담당.
+    /// </summary>
     private LineRenderer CreateTracer()
     {
-        var go = new GameObject("TracerFX");
+        var go = new GameObject("LaserBeamCore");
         go.transform.SetParent(transform, false);
         var lr = go.AddComponent<LineRenderer>();
         lr.sharedMaterial = GunFx.MakeTracerMaterial();
-        lr.startColor = new Color(1f, 0.9f, 0.5f, 0.9f);
-        lr.endColor = new Color(1f, 0.55f, 0.15f, 0.25f);
-        lr.startWidth = 0.05f * _fxScale;
-        lr.endWidth = 0.02f * _fxScale;
+        Color core = Color.Lerp(laserColor, Color.white, 0.75f); // 코어는 흰빛
+        lr.startColor = core;
+        lr.endColor = core;
+        lr.startWidth = 0.035f * _fxScale;
+        lr.endWidth = 0.035f * _fxScale;
         lr.positionCount = 2;
         lr.numCapVertices = 2;
+        lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        lr.receiveShadows = false;
+        lr.enabled = false;
+        return lr;
+    }
+
+    /// <summary>코어 바깥을 감싸는 넓고 옅은 글로우 레이어(레이저의 발광 후광).</summary>
+    private LineRenderer CreateBeamGlow()
+    {
+        var go = new GameObject("LaserBeamGlow");
+        go.transform.SetParent(transform, false);
+        var lr = go.AddComponent<LineRenderer>();
+        lr.sharedMaterial = GunFx.MakeTracerMaterial();
+        Color glow = new Color(laserColor.r, laserColor.g, laserColor.b, 0.45f);
+        lr.startColor = glow;
+        lr.endColor = glow;
+        lr.startWidth = 0.11f * _fxScale;
+        lr.endWidth = 0.11f * _fxScale;
+        lr.positionCount = 2;
+        lr.numCapVertices = 4;
         lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         lr.receiveShadows = false;
         lr.enabled = false;

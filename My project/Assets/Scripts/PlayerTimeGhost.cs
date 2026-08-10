@@ -17,7 +17,7 @@ public class PlayerTimeGhost : MonoBehaviour
 
     [Header("시간역행 잔상")]
     [Tooltip("역행 중 잔상을 남길 간격(초). 작을수록 촘촘하다.")]
-    [SerializeField] private float afterimageInterval = 0.05f;
+    [SerializeField] private float afterimageInterval = 0.14f;
     [Tooltip("잔상 하나가 사라지기까지의 시간(초)")]
     [SerializeField] private float afterimageLife = 0.7f;
     [Tooltip("잔상 색(알파가 시작 진하기)")]
@@ -40,6 +40,7 @@ public class PlayerTimeGhost : MonoBehaviour
     private int _count;
 
     private GameObject _ghost;
+    private Animator _ghostAnimator; // 지원 사격 중에만 켜서 조준/발사 모션 재생
     private Transform[] _srcBones;   // 플레이어 힙스 서브트리(총 포함)
     private Transform[] _dstBones;   // 고스트의 대응 본(동일 계층이라 순서 일치)
     private int _boneCount;
@@ -116,8 +117,15 @@ public class PlayerTimeGhost : MonoBehaviour
             if (mb != null) DestroyImmediate(mb);
         var cc = ghost.GetComponent<CharacterController>();
         if (cc != null) DestroyImmediate(cc);
-        foreach (var a in ghost.GetComponentsInChildren<Animator>(true))
-            if (a != null) DestroyImmediate(a); // 포즈는 본 복사로 직접 구동
+
+        // Animator는 지우지 않고 꺼둔다. 평소 포즈는 본 복사로 구동하고,
+        // 지원 사격 때만 켜서 조준·발사 애니메이션을 재생한다(SetGhostAnimating).
+        _ghostAnimator = ghost.GetComponentInChildren<Animator>(true);
+        if (_ghostAnimator != null)
+        {
+            _ghostAnimator.applyRootMotion = false; // 위치는 이 스크립트가 정한다
+            _ghostAnimator.enabled = false;
+        }
 
         // 반투명 고스트 머티리얼로 교체 + 그림자/이펙트 끔
         var mat = new Material(Shader.Find("Sprites/Default")) { color = ghostColor };
@@ -205,6 +213,59 @@ public class PlayerTimeGhost : MonoBehaviour
 
     /// <summary>지원 사격 동안 고스트를 현재 위치/포즈에 고정하거나 해제.</summary>
     public void SetFrozen(bool frozen) => _frozen = frozen;
+
+    /// <summary>
+    /// 지원 사격 동안 고스트 Animator를 켜서 조준 파지 자세를 취하게 한다(끄면 다시 본 복사 재생).
+    /// 과거 어떤 자세로 기록됐든 사격 중엔 총을 겨눈 모습이 되도록 한다.
+    /// </summary>
+    public void SetGhostAnimating(bool on)
+    {
+        if (_ghostAnimator == null || _ghostAnimator.runtimeAnimatorController == null) return;
+
+        _ghostAnimator.enabled = on;
+        if (!on) return;
+
+        // 정지 상태 + 조준 → Base Layer는 대기(소총 파지) 자세
+        _ghostAnimator.SetFloat("Speed", 0f);
+        _ghostAnimator.SetBool("IsRunning", false);
+        _ghostAnimator.SetBool("IsAiming", true);
+        _ghostAnimator.Play("Idle", 0, 0f); // 달리던 중 기록됐어도 즉시 파지 자세로
+
+        // 발사 모션은 상체 레이어에 있으므로 가중치를 올려야 보인다
+        int upper = _ghostAnimator.GetLayerIndex("UpperBody");
+        if (upper >= 0) _ghostAnimator.SetLayerWeight(upper, 1f);
+    }
+
+    /// <summary>고스트의 발사 모션 1회 재생(지원 사격 한 발마다 호출).</summary>
+    public void TriggerGhostFire()
+    {
+        if (_ghostAnimator != null && _ghostAnimator.enabled)
+            _ghostAnimator.SetTrigger("Fire");
+    }
+
+    /// <summary>
+    /// 고스트를 목표 지점 쪽으로 수평 회전시킨다(지원 사격 시 실제로 적을 겨누는 모습).
+    /// 고정(SetFrozen) 상태에서만 의미가 있다 — 재생 중이면 다음 프레임에 덮어써진다.
+    /// </summary>
+    public void AimGhostAt(Vector3 worldPoint)
+    {
+        if (_ghost == null || !_ghost.activeSelf) return;
+        Vector3 dir = worldPoint - _ghost.transform.position;
+        dir.y = 0f;
+        if (dir.sqrMagnitude < 1e-6f) return;
+        _ghost.transform.rotation = Quaternion.LookRotation(dir.normalized);
+    }
+
+    /// <summary>
+    /// 고스트를 제자리에서 수평으로 degrees만큼 돌린다.
+    /// 포즈가 비스듬한 상태에서도 총열이 목표를 향하도록 미세 조정할 때 쓴다
+    /// (루트를 목표로 바로 돌리면 몸이 포즈 각도만큼 엉뚱한 데를 본다).
+    /// </summary>
+    public void RotateGhostYaw(float degrees)
+    {
+        if (_ghost == null || !_ghost.activeSelf) return;
+        _ghost.transform.rotation = Quaternion.AngleAxis(degrees, Vector3.up) * _ghost.transform.rotation;
+    }
 
     // ---------- 시간역행: 과거로 되감기는 모습을 역재생 ----------
 
