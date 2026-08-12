@@ -5,6 +5,7 @@ using UnityEngine.UI;
 /// 게임 HUD를 에셋 없이 코드로 생성하는 UI.
 /// - 좌하단: 체력(HP) / 기력(SP) / 타임포스(TF) 바
 /// - 우하단: 현재 탄약 / 최대 탄약, 재장전 중 표시
+/// - 상단 중앙: 보스 체력(보스가 살아있을 때만)
 /// PlayerStats와 PlayerShooter를 찾아 매 프레임 값을 반영한다.
 /// (한글 글리프가 내장 폰트에 없어 라벨은 영문 약어를 쓴다)
 /// </summary>
@@ -15,6 +16,12 @@ public class HudUI : MonoBehaviour
 
     private Image _hpFill, _spFill, _tfFill;
     private Text _hpText, _spText, _tfText, _ammoText, _reloadText;
+    private GameObject _bossRoot;
+    private Image _bossFill;
+    private Text _bossText;
+    private GameObject _judgmentRoot;
+    private Image _judgmentFill;
+    private bool _korean;
 
     private static Sprite _whiteSprite;
     private Font _font;
@@ -31,7 +38,11 @@ public class HudUI : MonoBehaviour
     {
         _stats = FindFirstObjectByType<PlayerStats>();
         _shooter = FindFirstObjectByType<PlayerShooter>();
-        _font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        // 경고 문구는 한글로 보여야 해서 OS 폰트를 먼저 시도한다(실패 시 영문 폴백)
+        try { _font = Font.CreateDynamicFontFromOSFont("Malgun Gothic", 24); }
+        catch { _font = null; }
+        _korean = _font != null;
+        if (_font == null) _font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         Build();
     }
 
@@ -47,6 +58,23 @@ public class HudUI : MonoBehaviour
         {
             _ammoText.text = $"{_shooter.CurrentAmmo} / {_shooter.MagazineSize}";
             _reloadText.enabled = _shooter.IsReloading;
+        }
+
+        // 보스 체력: 살아있는 보스가 씬에 있을 때만 상단 중앙에 표시
+        var boss = BossController.Active;
+        bool showBoss = boss != null && !boss.IsDead;
+        if (_bossRoot != null && _bossRoot.activeSelf != showBoss) _bossRoot.SetActive(showBoss);
+        if (showBoss) SetBar(_bossFill, _bossText, boss.Health, boss.MaxHealth);
+
+        // 분신 처형 경고: 남은 시간이 줄어드는 동안 진짜를 찾아 협공해야 한다
+        bool showJudgment = showBoss && boss.JudgmentActive;
+        if (_judgmentRoot != null && _judgmentRoot.activeSelf != showJudgment)
+            _judgmentRoot.SetActive(showJudgment);
+        if (showJudgment && _judgmentFill != null)
+        {
+            var scale = _judgmentFill.rectTransform.localScale;
+            scale.x = boss.JudgmentRemain01;
+            _judgmentFill.rectTransform.localScale = scale;
         }
     }
 
@@ -90,6 +118,103 @@ public class HudUI : MonoBehaviour
         rlRt.anchoredPosition = new Vector2(-40f, 96f);
         rlRt.sizeDelta = new Vector2(300f, 30f);
         _reloadText.enabled = false;
+
+        BuildBossBar(canvas.transform);
+        BuildJudgmentWarning(canvas.transform);
+    }
+
+    /// <summary>
+    /// 보스 "분신 처형" 경고. 진짜를 찾아 협공(G)해야 한다는 것과 남은 시간을 알린다.
+    /// (이 패턴은 일반 사격으로는 파훼되지 않으므로, 안내가 없으면 사실상 즉사 패턴이 된다)
+    /// </summary>
+    private void BuildJudgmentWarning(Transform parent)
+    {
+        var root = MakeImage(parent, "JudgmentWarning", new Color(0f, 0f, 0f, 0f));
+        _judgmentRoot = root.gameObject;
+        var rt = root.rectTransform;
+        rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 1f);
+        rt.anchoredPosition = new Vector2(0f, -110f);
+        rt.sizeDelta = new Vector2(900f, 108f);
+
+        var title = MakeText(root.transform, "Title", 34, FontStyle.Bold, TextAnchor.UpperCenter);
+        title.text = _korean ? "분신 처형" : "EXECUTION";
+        title.color = new Color(1f, 0.42f, 0.08f);
+        var trt = title.rectTransform;
+        trt.anchorMin = new Vector2(0f, 1f);
+        trt.anchorMax = new Vector2(1f, 1f);
+        trt.pivot = new Vector2(0.5f, 1f);
+        trt.anchoredPosition = Vector2.zero;
+        trt.sizeDelta = new Vector2(0f, 40f);
+
+        var desc = MakeText(root.transform, "Desc", 20, FontStyle.Bold, TextAnchor.UpperCenter);
+        desc.text = _korean
+            ? "충전 색이 다른 '진짜'를 겨누고  G  — 과거의 나와 협공하라"
+            : "Aim at the one with a DIFFERENT charge color, press G to co-attack";
+        desc.color = new Color(1f, 0.92f, 0.8f);
+        var drt = desc.rectTransform;
+        drt.anchorMin = new Vector2(0f, 1f);
+        drt.anchorMax = new Vector2(1f, 1f);
+        drt.pivot = new Vector2(0.5f, 1f);
+        drt.anchoredPosition = new Vector2(0f, -44f);
+        drt.sizeDelta = new Vector2(0f, 28f);
+
+        // 남은 시간 바(좌→우로 줄어든다)
+        var barBg = MakeImage(root.transform, "TimeBg", new Color(0f, 0f, 0f, 0.55f));
+        var brt = barBg.rectTransform;
+        brt.anchorMin = brt.anchorMax = brt.pivot = new Vector2(0.5f, 0f);
+        brt.anchoredPosition = new Vector2(0f, 4f);
+        brt.sizeDelta = new Vector2(520f, 10f);
+
+        _judgmentFill = MakeImage(barBg.transform, "Fill", new Color(1f, 0.42f, 0.08f, 0.95f));
+        var frt = _judgmentFill.rectTransform;
+        frt.anchorMin = Vector2.zero;
+        frt.anchorMax = Vector2.one;
+        frt.offsetMin = new Vector2(2f, 2f);
+        frt.offsetMax = new Vector2(-2f, -2f);
+        frt.pivot = new Vector2(0f, 0.5f); // 좌측 기준으로 줄어듦(scale.x)
+
+        _judgmentRoot.SetActive(false);
+    }
+
+    /// <summary>상단 중앙 보스 체력 바(보스가 없으면 숨긴다).</summary>
+    private void BuildBossBar(Transform parent)
+    {
+        const float width = 900f, height = 20f;
+
+        var bg = MakeImage(parent, "BossBar", new Color(0f, 0f, 0f, 0.55f));
+        _bossRoot = bg.gameObject;
+        var bgRt = bg.rectTransform;
+        bgRt.anchorMin = bgRt.anchorMax = bgRt.pivot = new Vector2(0.5f, 1f);
+        bgRt.anchoredPosition = new Vector2(0f, -48f);
+        bgRt.sizeDelta = new Vector2(width, height);
+
+        _bossFill = MakeImage(bg.transform, "Fill", new Color(0.75f, 0.3f, 1f));
+        var fillRt = _bossFill.rectTransform;
+        fillRt.anchorMin = Vector2.zero;
+        fillRt.anchorMax = Vector2.one;
+        fillRt.offsetMin = new Vector2(2f, 2f);
+        fillRt.offsetMax = new Vector2(-2f, -2f);
+        _bossFill.type = Image.Type.Filled;
+        _bossFill.fillMethod = Image.FillMethod.Horizontal;
+        _bossFill.fillOrigin = (int)Image.OriginHorizontal.Left;
+
+        var label = MakeText(bg.transform, "Label", 18, FontStyle.Bold, TextAnchor.LowerLeft);
+        label.text = "ALIEN MONSTER";
+        var labRt = label.rectTransform;
+        labRt.anchorMin = new Vector2(0f, 1f);
+        labRt.anchorMax = new Vector2(1f, 1f);
+        labRt.pivot = new Vector2(0.5f, 0f);
+        labRt.anchoredPosition = new Vector2(0f, 4f);
+        labRt.sizeDelta = new Vector2(0f, 24f);
+
+        _bossText = MakeText(bg.transform, "Value", 14, FontStyle.Normal, TextAnchor.MiddleRight);
+        var valRt = _bossText.rectTransform;
+        valRt.anchorMin = Vector2.zero;
+        valRt.anchorMax = Vector2.one;
+        valRt.offsetMin = new Vector2(8f, 0f);
+        valRt.offsetMax = new Vector2(-8f, 0f);
+
+        _bossRoot.SetActive(false);
     }
 
     /// <summary>좌하단에 라벨 + 게이지 바 한 줄 생성. 인덱스 순서대로 위에서 아래로 쌓인다.</summary>

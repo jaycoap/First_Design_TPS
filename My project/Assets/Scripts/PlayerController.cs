@@ -27,6 +27,9 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private float runHoldTime = 0f;
     [Tooltip("구르기 중 전방 이동 속도 = walkSpeed × 이 배율.\n달리기 속도로 미끄러져 과이동하는 것을 막고, 구르기 관성만 남긴다.")]
     [SerializeField] private float rollSpeedMultiplier = 1.2f;
+    [Tooltip("구르기 전체 속도 배율. 애니메이션 재생 속도와 전방 이동 속도에 함께 곱해져\n" +
+             "같은 궤적을 더 빠르게 지나간다(1 = 원래 속도). 회피를 민첩하게 만들 때 올린다.")]
+    [SerializeField] private float rollSpeedUp = 1.4f;
 
     [Header("중력/점프")]
     [SerializeField] private float gravity = -20f;
@@ -79,6 +82,8 @@ public class PlayerController : MonoBehaviour
     private bool _wasRolling;          // 직전 프레임 구르기 여부(복귀 시 스냅)
     private float _groundContactY;     // CC가 실제로 밟은 접촉점 Y
     private float _groundContactTime;  // 접촉 갱신 시각
+    private float _slowFactor = 1f;    // 외부에서 건 이동 둔화 배율
+    private float _slowUntil;          // 둔화 만료 시각
 
     private const float AimRange = 500f;
 
@@ -110,6 +115,24 @@ public class PlayerController : MonoBehaviour
 
     /// <summary>외부(시간 되감기 등)에서 텔레포트시킨 뒤 호출: 수직 속도 초기화.</summary>
     public void OnTeleported() => _verticalVelocity = 0f;
+
+    /// <summary>
+    /// 외부(보스 텔레포트 충격파 등)에서 이동 속도를 일정 시간 떨어뜨린다.
+    /// factor 0.7 = 30% 감소. 이미 더 강한 둔화가 걸려 있으면 그것을 유지하고 지속시간만 늘린다.
+    /// 구르기(회피)에는 적용하지 않는다 — 둔화 중에도 회피 수단은 남겨 둔다.
+    /// </summary>
+    public void ApplyMoveSlow(float factor, float duration)
+    {
+        factor = Mathf.Clamp(factor, 0.05f, 1f);
+        if (Time.time >= _slowUntil || factor < _slowFactor) _slowFactor = factor;
+        _slowUntil = Mathf.Max(_slowUntil, Time.time + duration);
+    }
+
+    /// <summary>이동 둔화가 걸려 있는가(HUD/연출용).</summary>
+    public bool IsSlowed => Time.time < _slowUntil;
+
+    /// <summary>현재 이동 속도 배율(둔화가 없으면 1).</summary>
+    private float MoveSlowFactor => Time.time < _slowUntil ? _slowFactor : 1f;
 
     private void Update()
     {
@@ -150,14 +173,14 @@ public class PlayerController : MonoBehaviour
         bool isRunning = shiftRun && _runHoldTimer >= runHoldTime;
         _isRunning = isRunning;
 
-        float speed = isAiming ? aimSpeed : (isRunning ? runSpeed : walkSpeed);
+        float speed = (isAiming ? aimSpeed : (isRunning ? runSpeed : walkSpeed)) * MoveSlowFactor;
         Vector3 horizontal = moveDir * speed * inputMag;
 
         // 구르기 중엔 입력/달리기 속도를 무시하고 몸 전방으로 일정 속도만 이동.
         // (달리기 속도 그대로 미끄러져 롤이 끝나기 전에 과이동하는 문제 방지 —
         //  롤이 끝나면 키를 계속 누르고 있을 경우 자연히 달리기로 복귀한다)
         if (_rolling)
-            horizontal = transform.forward * (walkSpeed * rollSpeedMultiplier);
+            horizontal = transform.forward * (walkSpeed * rollSpeedMultiplier * rollSpeedUp);
 
         // --- 회전 ---
         if (_rolling)
@@ -198,6 +221,9 @@ public class PlayerController : MonoBehaviour
         // --- Animator 갱신(컨트롤러가 실제로 있을 때만) ---
         if (animator != null && animator.runtimeAnimatorController != null)
         {
+            // 구르는 동안만 애니메이션을 빠르게 재생 → 이동 속도(rollSpeedUp)와 궤적이 어긋나지 않는다
+            animator.speed = _rolling ? rollSpeedUp : 1f;
+
             // Speed는 이동 여부(0=정지)로 Idle↔Walk 전환에 쓰이고,
             // IsRunning이 켜지면 Walk→(Idle To Running)→Rifle Run으로 이어진다.
             float animSpeed = speed * inputMag;

@@ -5,11 +5,14 @@ using UnityEngine.UI;
 
 /// <summary>
 /// 시간 능력 컨트롤러(타임포스 소모).
+/// - G(협공): 전투 중 언제든 즉시 발동. 크로스헤어가 겨누고 있는 그 대상만 과거의 나가 함께 쏜다.
+///   적을 스스로 찾아다니지 않으므로, 여러 적 중 '어느 놈을 칠지'는 전적으로 플레이어의 조준이 정한다.
 /// - T: 슬로우 모션 + 선택 모드 진입(고스트가 준비되고 타임포스가 충분할 때)
 ///   - 좌클릭: 5초 전 위치로 되감기(텔레포트). 히스토리 초기화 → 고스트가 다시 차오를 때까지 자연 쿨다운
-///   - 우클릭: 5초 전 고스트가 그 자리에 고정된 채 플레이어의 조준점을 향해 지원 사격
+///   - 우클릭: 협공(G와 동일 — 겨누고 있는 대상)
 ///   - T 재입력 / 시간 초과: 취소(타임포스 소모 없음)
 /// 선택 모드 동안 일반 발사/조준 입력은 잠긴다(PlayerShooter/ThirdPersonCamera가 DecisionActive 확인).
+/// 협공(G)은 선택 모드를 거치지 않으므로 사격 중에도 끊김 없이 쓸 수 있다.
 /// </summary>
 [RequireComponent(typeof(PlayerTimeGhost))]
 public class TimeShiftController : MonoBehaviour
@@ -36,14 +39,37 @@ public class TimeShiftController : MonoBehaviour
     [SerializeField] private float supportFireRate = 8f;
     [SerializeField] private float supportDamage = 10f;
     [SerializeField] private float supportRange = 200f;
-    [Tooltip("플레이어가 적을 겨누고 있지 않을 때, 고스트가 주변에서 적을 찾는 반경")]
-    [SerializeField] private float supportSearchRadius = 60f;
+    [Tooltip("협공 발동 키. 사격 중에도 그대로 누를 수 있다.")]
+    [SerializeField] private Key supportKey = Key.G;
 
     /// <summary>선택 모드 중인가(전역). PlayerShooter/카메라가 참조해 입력 충돌을 막는다.</summary>
     public static bool DecisionActive { get; private set; }
 
     /// <summary>시간역행 역재생 중인가(전역). 재생 동안 조준 등 입력을 잠근다.</summary>
     public static bool RewindActive { get; private set; }
+
+    /// <summary>
+    /// 지금 들어가는 피해가 '과거의 나(고스트)'의 협공인가(전역, 한 발 단위).
+    /// 보스의 분신 처형 패턴은 이 피해만 파훼로 인정한다 — 일반 사격과 구분하기 위한 표식.
+    /// </summary>
+    public static bool GhostDamageActive { get; private set; }
+
+    /// <summary>
+    /// 협공 세션 번호(발동할 때마다 1 증가). 진행 중이던 협공과 새로 시작한 협공을 구분한다.
+    /// 보스는 패턴이 시작되기 전에 이미 날아오던 협공으로 패턴이 즉시 파훼되는 것을 이 번호로 막는다.
+    /// </summary>
+    public static int SupportSession { get; private set; }
+
+    /// <summary>협공 사격이 진행 중인가(전역).</summary>
+    public static bool SupportActive { get; private set; }
+
+    /// <summary>진행 중인 협공을 즉시 중단시킨다(보스 패턴 진입 등 외부 개입).</summary>
+    public static void CancelSupport()
+    {
+        if (_instance != null) _instance.StopSupport();
+    }
+
+    private static TimeShiftController _instance;
 
     private PlayerTimeGhost _ghost;
     private PlayerController _pc;
@@ -70,6 +96,7 @@ public class TimeShiftController : MonoBehaviour
 
     private void Awake()
     {
+        _instance = this;
         _ghost = GetComponent<PlayerTimeGhost>();
         _pc = GetComponent<PlayerController>();
         _stats = GetComponent<PlayerStats>();
@@ -78,6 +105,9 @@ public class TimeShiftController : MonoBehaviour
         _cam = Camera.main;
         _tpsCam = _cam != null ? _cam.GetComponent<ThirdPersonCamera>() : null;
         _mask = ~(1 << gameObject.layer); // 자기(플레이어/고스트) 레이어 제외
+        // 보이지 않는 낙하 방지 벽은 협공 사선을 막으면 안 된다(맵 밖의 분신을 겨눌 수 있어야 한다)
+        int wallLayer = LayerMask.NameToLayer("ArenaWall");
+        if (wallLayer >= 0) _mask &= ~(1 << wallLayer);
         if (_cc != null) _fxScale = _cc.height / 1.8f;
 
         _tracer = CreateGhostTracer();
@@ -95,6 +125,24 @@ public class TimeShiftController : MonoBehaviour
     private void OnDisable()
     {
         if (DecisionActive) EndDecision();
+        StopSupport();
+        if (_instance == this) _instance = null;
+    }
+
+    /// <summary>
+    /// 협공 코루틴을 중단하고 고스트를 원래 상태로 돌린다(중복 호출 안전).
+    /// 정상 종료와 달리 히스토리는 비우지 않는다 — 외부 사정으로 끊긴 것이므로
+    /// 5초 재충전 페널티까지 물리면 곧바로 다시 협공해야 하는 패턴을 넘길 수 없다.
+    /// </summary>
+    private void StopSupport()
+    {
+        if (_support == null) { SupportActive = false; return; }
+
+        StopCoroutine(_support);
+        _support = null;
+        SupportActive = false;
+        _ghost.SetGhostAnimating(false);
+        _ghost.SetFrozen(false);
     }
 
     private void Update()
@@ -106,6 +154,10 @@ public class TimeShiftController : MonoBehaviour
 
         if (!DecisionActive)
         {
+            // 협공(G): 선택 모드를 거치지 않고 사격 중에도 즉시 발동
+            if (Keyboard.current[supportKey].wasPressedThisFrame)
+                TryStartSupport();
+
             if (Keyboard.current.tKey.wasPressedThisFrame && _support == null && !RewindActive
                 && _ghost.GhostReady && HasForce(Mathf.Min(rewindCost, supportCost)))
                 BeginDecision();
@@ -115,7 +167,7 @@ public class TimeShiftController : MonoBehaviour
         // --- 선택 모드 ---
         UpdateDecisionUI();
         if (Mouse.current.leftButton.wasPressedThisFrame && TryUseForce(rewindCost)) { DoRewind(); return; }
-        if (Mouse.current.rightButton.wasPressedThisFrame && TryUseForce(supportCost)) { DoSupportFire(); return; }
+        if (Mouse.current.rightButton.wasPressedThisFrame) { EndDecision(); TryStartSupport(); return; }
         if (Keyboard.current.tKey.wasPressedThisFrame || Time.realtimeSinceStartup >= _decisionEndRealtime)
             EndDecision();
     }
@@ -173,32 +225,41 @@ public class TimeShiftController : MonoBehaviour
         TimeRewindable.RewindAll(_ghost.Delay, rewindDuration); // 월드(보스 패턴 등)도 함께 역행
     }
 
-    /// <summary>우클릭: 고스트를 고정하고 플레이어 조준점을 향해 일정 시간 지원 사격.</summary>
-    private void DoSupportFire()
+    /// <summary>
+    /// 협공 발동(G / 선택 모드 우클릭).
+    /// 크로스헤어가 지금 겨누고 있는 대상 하나만 목표로 삼는다 — 스스로 적을 찾지 않으므로
+    /// 여러 적(보스 분신 등) 중 무엇을 칠지는 플레이어의 조준이 결정한다.
+    /// 겨누는 대상이 없으면 발동하지 않고 타임포스도 소모하지 않는다.
+    /// </summary>
+    private void TryStartSupport()
     {
-        EndDecision();
-        if (_support == null) _support = StartCoroutine(SupportFireRoutine());
+        if (_support != null || RewindActive) return;
+        if (!_ghost.GhostReady) return;
+
+        Transform target = FindAimedTarget();
+        if (target == null) return;          // 허공을 겨눈 협공은 발동하지 않는다
+        if (!TryUseForce(supportCost)) return;
+
+        SupportSession++;
+        SupportActive = true;
+        _support = StartCoroutine(SupportFireRoutine(target));
     }
 
-    private IEnumerator SupportFireRoutine()
+    /// <summary>고스트를 그 자리에 고정하고, 지정한 대상만 계속 쏜다.</summary>
+    private IEnumerator SupportFireRoutine(Transform target)
     {
         _ghost.SetFrozen(true);
         _ghost.SetGhostAnimating(true); // 과거 자세와 무관하게 총을 겨눈 모습으로
-
-        // 적을 하나 붙잡아 계속 조준한다. (플레이어 시선을 따라가면 시선을 돌릴 때마다
-        //  탄이 같이 빗나가서 '지원 사격'이 되지 않는다.)
-        Transform target = FindSupportTarget();
 
         float end = Time.time + supportDuration;
         var wait = new WaitForSeconds(1f / Mathf.Max(1f, supportFireRate));
         while (Time.time < end)
         {
-            // 목표가 죽거나 사라지면 다음 적으로
-            if (target == null || !target.gameObject.activeInHierarchy)
-                target = FindSupportTarget();
+            // 목표가 사라지면(격파/소멸) 협공도 거기서 끝난다 — 다른 적으로 옮겨가지 않는다
+            if (target == null || !target.gameObject.activeInHierarchy) break;
 
-            // 매 발 다시 겨눈다 — 적이 움직여도 총구가 계속 따라간다
-            if (target != null) AimGhostAtTarget(AimPointOf(target));
+            // 매 발 다시 겨눈다 — 목표가 움직여도 총구가 따라간다
+            AimGhostAtTarget(AimPointOf(target));
 
             FireFromGhost(target);
             yield return wait;
@@ -214,40 +275,24 @@ public class TimeShiftController : MonoBehaviour
         _ghost.SetFrozen(false);
         _ghost.ClearHistory();
         _support = null;
+        SupportActive = false;
     }
 
     /// <summary>
-    /// 지원 사격 목표 선정: 플레이어가 겨누고 있는 적을 우선하고,
-    /// 없으면 고스트에서 가장 가까운 적을 잡는다.
+    /// 협공 목표 = 지금 크로스헤어가 겨누고 있는 대상. 오직 이것뿐이며 주변 탐색은 하지 않는다.
+    /// (겨눈 놈만 친다 — 보스 분신들 사이에서 '진짜'를 직접 짚어내야 하는 이유)
     /// </summary>
-    private Transform FindSupportTarget()
+    private Transform FindAimedTarget()
     {
-        // 1순위: 플레이어의 크로스헤어가 향하는 적(같이 싸우는 느낌)
-        if (_cam != null)
-        {
-            Ray center = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
-            if (Physics.Raycast(center, out RaycastHit ch, supportRange, _mask, QueryTriggerInteraction.Ignore))
-            {
-                var aimed = ch.collider.GetComponentInParent<IDamageable>() as Component;
-                if (aimed != null && aimed.transform != transform) return aimed.transform;
-            }
-        }
+        if (_cam == null) return null;
 
-        // 2순위: 고스트 주변에서 가장 가까운 적
-        Vector3 from = _ghost.GhostGun != null ? _ghost.GhostGun.position : transform.position;
-        var hits = Physics.OverlapSphere(from, supportSearchRadius, _mask, QueryTriggerInteraction.Ignore);
-        Transform best = null;
-        float bestSqr = float.MaxValue;
-        foreach (var col in hits)
-        {
-            var comp = col.GetComponentInParent<IDamageable>() as Component;
-            if (comp == null) continue;
-            if (comp.transform == transform) continue; // 자기 자신 제외
+        Ray center = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+        if (!Physics.Raycast(center, out RaycastHit hit, supportRange, _mask, QueryTriggerInteraction.Ignore))
+            return null;
 
-            float sqr = (comp.transform.position - from).sqrMagnitude;
-            if (sqr < bestSqr) { bestSqr = sqr; best = comp.transform; }
-        }
-        return best;
+        var aimed = hit.collider.GetComponentInParent<IDamageable>() as Component;
+        if (aimed == null || aimed.transform == transform) return null;
+        return aimed.transform;
     }
 
     /// <summary>
@@ -320,14 +365,16 @@ public class TimeShiftController : MonoBehaviour
         if (Physics.Raycast(origin, dir, out RaycastHit hit, supportRange, _mask, QueryTriggerInteraction.Ignore))
         {
             endPoint = hit.point;
-            hit.collider.GetComponentInParent<IDamageable>()?.TakeDamage(supportDamage, hit.point, hit.normal);
+            var dmg = hit.collider.GetComponentInParent<IDamageable>();
+            if (dmg != null) DealGhostDamage(dmg, supportDamage, hit.point, hit.normal);
             _ghostImpactFx.Spawn(hit.point, hit.normal);
         }
         else if (target != null)
         {
             // 레이가 빗나가도(얇은 콜라이더 등) 조준한 적에겐 확실히 명중시킨다
             endPoint = aim;
-            target.GetComponentInParent<IDamageable>()?.TakeDamage(supportDamage, aim, -dir);
+            var dmg2 = target.GetComponentInParent<IDamageable>();
+            if (dmg2 != null) DealGhostDamage(dmg2, supportDamage, aim, -dir);
             _ghostImpactFx.Spawn(aim, -dir);
         }
 
@@ -338,6 +385,17 @@ public class TimeShiftController : MonoBehaviour
         _tracer.SetPosition(0, origin);
         _tracer.SetPosition(1, endPoint);
         _tracerHide = Time.unscaledTime + 0.04f;
+    }
+
+    /// <summary>
+    /// 협공 피해 전달. 전달 동안 GhostDamageActive를 세워, 받는 쪽이
+    /// "이건 과거의 나와의 협공"임을 구분할 수 있게 한다(보스 분신 처형 파훼 판정).
+    /// </summary>
+    private static void DealGhostDamage(IDamageable target, float amount, Vector3 point, Vector3 normal)
+    {
+        GhostDamageActive = true;
+        try { target.TakeDamage(amount, point, normal); }
+        finally { GhostDamageActive = false; }
     }
 
     /// <summary>고스트 지원 사격용 탄도선(시안 빛, 캐릭터 스케일 반영).</summary>
@@ -407,9 +465,10 @@ public class TimeShiftController : MonoBehaviour
             korean ? "시간역행" : "TIME REVERSE",
             korean ? $"5초 전의 나로 돌아간다  ·  TF {rewindCost:0}" : $"Return to 5s ago  ·  TF {rewindCost:0}");
         _supportCard = MakeCard(canvasGO.transform, 230f, new Color(1f, 0.65f, 0.3f),
-            korean ? "우클릭" : "RMB",
-            korean ? "시간공명" : "TIME RESONANCE",
-            korean ? $"과거의 나와 공명해 함께 사격  ·  TF {supportCost:0}" : $"Past self fires with you  ·  TF {supportCost:0}");
+            korean ? $"우클릭 / {supportKey}" : $"RMB / {supportKey}",
+            korean ? "협공" : "CO-ATTACK",
+            korean ? $"겨누는 대상을 과거의 나와 함께 사격  ·  TF {supportCost:0}"
+                   : $"Past self fires at your target  ·  TF {supportCost:0}");
 
         // 취소 힌트
         var cancel = MakeText(canvasGO.transform, "Cancel", 20, FontStyle.Normal, TextAnchor.MiddleCenter);

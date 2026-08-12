@@ -490,6 +490,7 @@ MonoBehaviour:
   rotationSpeed: 15
   runHoldTime: 0
   rollSpeedMultiplier: 1.65
+  rollSpeedUp: 1.4
   gravity: -2.2337842
   jumpHeight: 0.13402706
   groundFeet: 1
@@ -522,7 +523,7 @@ MonoBehaviour:
   animator: {fileID: 6803777827033201720}
   fireRate: 10
   range: 200
-  damage: 15
+  damage: 5
   magazineSize: 35
   reloadTime: 2.5
   requireAimToFire: 1
@@ -608,7 +609,7 @@ MonoBehaviour:
   supportFireRate: 8
   supportDamage: 10
   supportRange: 200
-  supportSearchRadius: 60
+  supportKey: 21
 --- !u!4 &1636186006574431841 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 1852576806548013000, guid: 5b2caba6ca75f0a4f825cb97c3256601, type: 3}
