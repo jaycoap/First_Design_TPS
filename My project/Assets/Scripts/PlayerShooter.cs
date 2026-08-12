@@ -171,6 +171,8 @@ public class PlayerShooter : MonoBehaviour
 
         bool canFire = !TimeShiftController.DecisionActive // 시간 선택 모드 중엔 좌클릭이 '되감기'라 발사 금지
                        && !rolling
+                       && !_reloading                      // 재장전 플래그가 살아 있는 동안
+                       && !ReloadMotionPlaying()           // 플래그가 먼저 풀려도 모션이 끝날 때까지
                        && (!requireAimToFire || (tpsCamera != null && tpsCamera.IsAiming));
         if (canFire && Mouse.current.leftButton.isPressed && Time.time >= _nextFireTime)
         {
@@ -359,6 +361,21 @@ public class PlayerShooter : MonoBehaviour
         if (_ammo <= 0) StartReload();
     }
 
+    /// <summary>
+    /// 상체 레이어가 지금 재장전 모션을 재생(또는 진입)하고 있는가.
+    /// _reloading 플래그와 별개로 '화면에 재장전 동작이 보이는 동안'을 직접 판정한다.
+    /// 아래 UpdateReload의 타이머 폴백이 모션보다 먼저 끝나더라도 이 조건이 발사를 막는다.
+    /// </summary>
+    private bool ReloadMotionPlaying()
+    {
+        if (animator == null || animator.runtimeAnimatorController == null) return false;
+        if (_upperLayerIdx == -2) _upperLayerIdx = animator.GetLayerIndex("UpperBody");
+        if (_upperLayerIdx < 0) return false;
+
+        return animator.GetCurrentAnimatorStateInfo(_upperLayerIdx).IsName("Reload")
+            || animator.GetNextAnimatorStateInfo(_upperLayerIdx).IsName("Reload");
+    }
+
     /// <summary>재장전 시작. UpperBody 레이어의 Reload 상태(모션)를 발동시킨다.</summary>
     private void StartReload()
     {
@@ -368,7 +385,12 @@ public class PlayerShooter : MonoBehaviour
         _reloadStartTime = Time.time;
         _reloadStateSeen = false;
         if (animator != null && animator.runtimeAnimatorController != null)
+        {
+            // 마지막 발에서 자동 재장전이 걸리면 소비되지 않은 Fire 트리거가 남아 있다.
+            // 그대로 두면 재장전이 끝나는 순간 입력도 없이 발사 모션이 한 번 튄다.
+            animator.ResetTrigger(FireHash);
             animator.SetTrigger(ReloadHash);
+        }
     }
 
     /// <summary>
@@ -405,8 +427,7 @@ public class PlayerShooter : MonoBehaviour
         bool done;
         if (hasAnim && _upperLayerIdx >= 0)
         {
-            bool inState = animator.GetCurrentAnimatorStateInfo(_upperLayerIdx).IsName("Reload")
-                        || animator.GetNextAnimatorStateInfo(_upperLayerIdx).IsName("Reload");
+            bool inState = ReloadMotionPlaying();
             if (inState) _reloadStateSeen = true;
             // 상태 진입을 확인했으면 상태 종료 = 완료 / 진입을 못 봤으면(상태 미구성) 타이머로 대체
             done = _reloadStateSeen ? !inState : elapsed >= reloadTime;
