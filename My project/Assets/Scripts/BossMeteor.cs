@@ -161,6 +161,7 @@ public class BossMeteor : MonoBehaviour
         if (_sharedImpact == null || _sharedImpact.Root == null)
             _sharedImpact = GunFx.BuildImpact(_k * 3f, _color);
         _sharedImpact.Spawn(_impact, Vector3.up);
+        GameSfx.PlayAt(Sfx.MeteorImpact, _impact, pitch: Random.Range(0.9f, 1.1f));
 
         // 폭발 광원
         var lightGO = new GameObject("Blast");

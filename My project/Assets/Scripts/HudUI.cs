@@ -13,6 +13,13 @@ public class HudUI : MonoBehaviour
 {
     private PlayerStats _stats;
     private PlayerShooter _shooter;
+    private TimeShiftController _shift;
+
+    // 시간 능력 슬롯(T 시간역행 / G 협공)
+    private CanvasGroup _rewindChip, _supportChip;
+    private Image _rewindFill, _supportFill;
+    private Text _rewindState, _supportState;
+    private Text _toast;
 
     private Image _hpFill, _spFill, _tfFill;
     private Text _hpText, _spText, _tfText, _ammoText, _reloadText;
@@ -21,6 +28,8 @@ public class HudUI : MonoBehaviour
     private Text _bossText;
     private GameObject _judgmentRoot;
     private Image _judgmentFill;
+    private Image _judgmentBreakFill;
+    private Text _judgmentBreakText;
     private bool _korean;
 
     private static Sprite _whiteSprite;
@@ -38,6 +47,7 @@ public class HudUI : MonoBehaviour
     {
         _stats = FindFirstObjectByType<PlayerStats>();
         _shooter = FindFirstObjectByType<PlayerShooter>();
+        _shift = FindFirstObjectByType<TimeShiftController>();
         // 경고 문구는 한글로 보여야 해서 OS 폰트를 먼저 시도한다(실패 시 영문 폴백)
         try { _font = Font.CreateDynamicFontFromOSFont("Malgun Gothic", 24); }
         catch { _font = null; }
@@ -60,21 +70,78 @@ public class HudUI : MonoBehaviour
             _reloadText.enabled = _shooter.IsReloading;
         }
 
+        UpdateAbilities();
+
         // 보스 체력: 살아있는 보스가 씬에 있을 때만 상단 중앙에 표시
         var boss = BossController.Active;
         bool showBoss = boss != null && !boss.IsDead;
         if (_bossRoot != null && _bossRoot.activeSelf != showBoss) _bossRoot.SetActive(showBoss);
         if (showBoss) SetBar(_bossFill, _bossText, boss.Health, boss.MaxHealth);
 
-        // 분신 처형 경고: 남은 시간이 줄어드는 동안 진짜를 찾아 협공해야 한다
+        // 분신 처형 경고: 남은 시간이 줄어드는 동안 진짜를 찾아 협공·사격을 퍼부어야 한다
         bool showJudgment = showBoss && boss.JudgmentActive;
         if (_judgmentRoot != null && _judgmentRoot.activeSelf != showJudgment)
             _judgmentRoot.SetActive(showJudgment);
-        if (showJudgment && _judgmentFill != null)
+        if (showJudgment)
         {
-            var scale = _judgmentFill.rectTransform.localScale;
-            scale.x = boss.JudgmentRemain01;
-            _judgmentFill.rectTransform.localScale = scale;
+            if (_judgmentFill != null)
+            {
+                var scale = _judgmentFill.rectTransform.localScale;
+                scale.x = boss.JudgmentRemain01;
+                _judgmentFill.rectTransform.localScale = scale;
+            }
+            // 파훼 진행도: 진짜에게 명중시킨 횟수(협공 + 일반 사격)
+            if (_judgmentBreakFill != null) _judgmentBreakFill.fillAmount = boss.JudgmentBreak01;
+            if (_judgmentBreakText != null)
+                _judgmentBreakText.text = $"{boss.JudgmentHits} / {boss.JudgmentBreakHits}";
+        }
+    }
+
+    /// <summary>
+    /// 시간 능력 슬롯 갱신. 각 슬롯은 "왜 못 쓰는지"까지 보여 준다 —
+    /// 재충전 중인지, 타임포스가 얼마나 모자란지, 협공이 몇 초 남았는지.
+    /// </summary>
+    private void UpdateAbilities()
+    {
+        if (_shift == null || _stats == null || _rewindChip == null) return;
+
+        bool ghost = _shift.GhostReady;
+        float tf = _stats.TimeForce;
+
+        // T — 시간역행
+        float rewindNeed = _shift.RewindCost;
+        bool rewindOk = ghost && tf >= rewindNeed;
+        _rewindChip.alpha = rewindOk ? 1f : 0.45f;
+        _rewindFill.fillAmount = rewindNeed > 0f ? Mathf.Clamp01(tf / rewindNeed) : 1f;
+        _rewindState.text = !ghost ? (_korean ? "재충전" : "RECHARGE")
+                          : rewindOk ? (_korean ? "준비" : "READY")
+                          : $"TF -{Mathf.CeilToInt(rewindNeed - tf)}";
+
+        // G — 협공(발동 중에는 남은 시간을 채움으로 보여 준다)
+        float supportNeed = _shift.SupportCost;
+        bool supporting = TimeShiftController.SupportActive;
+        bool supportOk = ghost && tf >= supportNeed;
+        _supportChip.alpha = supporting || supportOk ? 1f : 0.45f;
+        _supportFill.fillAmount = supporting
+            ? _shift.SupportRemain01
+            : (supportNeed > 0f ? Mathf.Clamp01(tf / supportNeed) : 1f);
+        _supportState.text = supporting ? (_korean ? "발동 중" : "FIRING")
+                           : !ghost ? (_korean ? "재충전" : "RECHARGE")
+                           : supportOk ? (_korean ? "준비" : "READY")
+                           : $"TF -{Mathf.CeilToInt(supportNeed - tf)}";
+
+        // 발동 실패 사유를 잠깐 띄웠다가 사라지게 한다
+        if (_toast == null) return;
+        const float toastLife = 1.6f;
+        float age = Time.unscaledTime - TimeShiftController.LastDenyTime;
+        bool show = !string.IsNullOrEmpty(TimeShiftController.LastDenyReason) && age < toastLife;
+        _toast.enabled = show;
+        if (show)
+        {
+            _toast.text = TimeShiftController.LastDenyReason;
+            var c = _toast.color;
+            c.a = Mathf.Clamp01(toastLife - age); // 마지막 1초 동안 서서히 사라짐
+            _toast.color = c;
         }
     }
 
@@ -119,8 +186,113 @@ public class HudUI : MonoBehaviour
         rlRt.sizeDelta = new Vector2(300f, 30f);
         _reloadText.enabled = false;
 
+        BuildAbilityChips(canvas.transform);
         BuildBossBar(canvas.transform);
         BuildJudgmentWarning(canvas.transform);
+    }
+
+    /// <summary>
+    /// 시간 능력 슬롯 2칸(T 시간역행 / G 협공)과 실패 사유 토스트.
+    /// 타임포스 바에는 발동에 필요한 지점을 눈금으로 그어, 언제 쓸 수 있는지 한눈에 보이게 한다.
+    /// (이게 없으면 능력이 조건 미달로 조용히 무시될 때 플레이어가 이유를 알 수 없다)
+    /// </summary>
+    private void BuildAbilityChips(Transform parent)
+    {
+        if (_shift == null) return; // 시간 능력이 없는 구성이면 슬롯도 만들지 않는다
+
+        const float x = 40f, y = 136f, w = 165f, gap = 10f;
+        var rewindColor = new Color(0.35f, 0.8f, 1f);
+        var supportColor = new Color(1f, 0.65f, 0.3f);
+
+        _rewindChip = MakeAbilityChip(parent, x, y, w, rewindColor, "T",
+            _korean ? "시간역행" : "REVERSE", out _rewindFill, out _rewindState);
+        _supportChip = MakeAbilityChip(parent, x + w + gap, y, w, supportColor, "G",
+            _korean ? "협공" : "CO-ATK", out _supportFill, out _supportState);
+
+        // 타임포스 바 위의 비용 눈금(둘 다 같은 값이면 하나만 보인다)
+        if (_stats != null && _stats.MaxTimeForce > 0f)
+        {
+            AddCostTick(_tfFill, _shift.RewindCost / _stats.MaxTimeForce, rewindColor);
+            AddCostTick(_tfFill, _shift.SupportCost / _stats.MaxTimeForce, supportColor);
+        }
+
+        _toast = MakeText(parent, "AbilityToast", 20, FontStyle.Bold, TextAnchor.LowerLeft);
+        _toast.color = new Color(1f, 0.75f, 0.3f);
+        var trt = _toast.rectTransform;
+        trt.anchorMin = trt.anchorMax = trt.pivot = Vector2.zero;
+        trt.anchoredPosition = new Vector2(x, y + 36f);
+        trt.sizeDelta = new Vector2(520f, 28f);
+        _toast.enabled = false;
+    }
+
+    /// <summary>능력 슬롯 한 칸: 키 배지 + 이름 + 상태, 배경에 충전/진행 채움.</summary>
+    private CanvasGroup MakeAbilityChip(Transform parent, float x, float y, float width, Color accent,
+                                        string key, string label, out Image fill, out Text state)
+    {
+        const float h = 30f;
+
+        var bg = MakeImage(parent, "Ability_" + key, new Color(0f, 0f, 0f, 0.55f));
+        var rt = bg.rectTransform;
+        rt.anchorMin = rt.anchorMax = rt.pivot = Vector2.zero;
+        rt.anchoredPosition = new Vector2(x, y);
+        rt.sizeDelta = new Vector2(width, h);
+
+        // 채움: 평소엔 타임포스 충전 정도, 협공 중에는 남은 시간
+        fill = MakeImage(bg.transform, "Fill", new Color(accent.r, accent.g, accent.b, 0.3f));
+        var frt = fill.rectTransform;
+        frt.anchorMin = Vector2.zero;
+        frt.anchorMax = Vector2.one;
+        frt.offsetMin = new Vector2(2f, 2f);
+        frt.offsetMax = new Vector2(-2f, -2f);
+        fill.type = Image.Type.Filled;
+        fill.fillMethod = Image.FillMethod.Horizontal;
+        fill.fillOrigin = (int)Image.OriginHorizontal.Left;
+
+        var badge = MakeImage(bg.transform, "Badge", accent);
+        var brt = badge.rectTransform;
+        brt.anchorMin = brt.anchorMax = brt.pivot = new Vector2(0f, 0.5f);
+        brt.anchoredPosition = new Vector2(6f, 0f);
+        brt.sizeDelta = new Vector2(24f, 22f);
+
+        var keyText = MakeText(badge.transform, "Key", 14, FontStyle.Bold, TextAnchor.MiddleCenter);
+        keyText.text = key;
+        keyText.color = Color.black;
+        var krt = keyText.rectTransform;
+        krt.anchorMin = Vector2.zero;
+        krt.anchorMax = Vector2.one;
+        krt.offsetMin = Vector2.zero;
+        krt.offsetMax = Vector2.zero;
+
+        var name = MakeText(bg.transform, "Name", 14, FontStyle.Bold, TextAnchor.MiddleLeft);
+        name.text = label;
+        var nrt = name.rectTransform;
+        nrt.anchorMin = Vector2.zero;
+        nrt.anchorMax = Vector2.one;
+        nrt.offsetMin = new Vector2(36f, 0f);
+        nrt.offsetMax = new Vector2(-8f, 0f);
+
+        state = MakeText(bg.transform, "State", 12, FontStyle.Normal, TextAnchor.MiddleRight);
+        state.color = new Color(1f, 1f, 1f, 0.85f);
+        var srt = state.rectTransform;
+        srt.anchorMin = Vector2.zero;
+        srt.anchorMax = Vector2.one;
+        srt.offsetMin = new Vector2(8f, 0f);
+        srt.offsetMax = new Vector2(-8f, 0f);
+
+        return bg.gameObject.AddComponent<CanvasGroup>();
+    }
+
+    /// <summary>게이지 바에 "여기부터 쓸 수 있다"는 세로 눈금을 긋는다.</summary>
+    private void AddCostTick(Image bar, float fraction, Color color)
+    {
+        if (bar == null) return;
+        var tick = MakeImage(bar.transform.parent, "CostTick", new Color(color.r, color.g, color.b, 0.9f));
+        var rt = tick.rectTransform;
+        rt.anchorMin = new Vector2(Mathf.Clamp01(fraction), 0f);
+        rt.anchorMax = new Vector2(Mathf.Clamp01(fraction), 1f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = Vector2.zero;
+        rt.sizeDelta = new Vector2(2f, -8f);
     }
 
     /// <summary>
@@ -134,7 +306,7 @@ public class HudUI : MonoBehaviour
         var rt = root.rectTransform;
         rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 1f);
         rt.anchoredPosition = new Vector2(0f, -110f);
-        rt.sizeDelta = new Vector2(900f, 108f);
+        rt.sizeDelta = new Vector2(900f, 140f);
 
         var title = MakeText(root.transform, "Title", 34, FontStyle.Bold, TextAnchor.UpperCenter);
         title.text = _korean ? "분신 처형" : "EXECUTION";
@@ -148,8 +320,8 @@ public class HudUI : MonoBehaviour
 
         var desc = MakeText(root.transform, "Desc", 20, FontStyle.Bold, TextAnchor.UpperCenter);
         desc.text = _korean
-            ? "충전 색이 다른 '진짜'를 겨누고  G  — 과거의 나와 협공하라"
-            : "Aim at the one with a DIFFERENT charge color, press G to co-attack";
+            ? "충전 색이 다른 '진짜'에게  G(협공) + 사격  을 퍼부어라"
+            : "Pour fire into the one with a DIFFERENT charge color (G = co-attack)";
         desc.color = new Color(1f, 0.92f, 0.8f);
         var drt = desc.rectTransform;
         drt.anchorMin = new Vector2(0f, 1f);
@@ -157,6 +329,39 @@ public class HudUI : MonoBehaviour
         drt.pivot = new Vector2(0.5f, 1f);
         drt.anchoredPosition = new Vector2(0f, -44f);
         drt.sizeDelta = new Vector2(0f, 28f);
+
+        // 파훼 진행도 바(명중시킬수록 좌→우로 찬다) — 사격이 통하고 있음을 보여 준다
+        var breakBg = MakeImage(root.transform, "BreakBg", new Color(0f, 0f, 0f, 0.55f));
+        var kbrt = breakBg.rectTransform;
+        kbrt.anchorMin = kbrt.anchorMax = kbrt.pivot = new Vector2(0.5f, 0f);
+        kbrt.anchoredPosition = new Vector2(0f, 20f);
+        kbrt.sizeDelta = new Vector2(520f, 20f);
+
+        _judgmentBreakFill = MakeImage(breakBg.transform, "Fill", new Color(0.45f, 0.9f, 1f, 0.95f));
+        var kfrt = _judgmentBreakFill.rectTransform;
+        kfrt.anchorMin = Vector2.zero;
+        kfrt.anchorMax = Vector2.one;
+        kfrt.offsetMin = new Vector2(2f, 2f);
+        kfrt.offsetMax = new Vector2(-2f, -2f);
+        _judgmentBreakFill.type = Image.Type.Filled;
+        _judgmentBreakFill.fillMethod = Image.FillMethod.Horizontal;
+        _judgmentBreakFill.fillOrigin = (int)Image.OriginHorizontal.Left;
+        _judgmentBreakFill.fillAmount = 0f;
+
+        var breakLabel = MakeText(breakBg.transform, "Label", 14, FontStyle.Bold, TextAnchor.MiddleLeft);
+        breakLabel.text = _korean ? "파훼" : "BREAK";
+        var klrt = breakLabel.rectTransform;
+        klrt.anchorMin = Vector2.zero;
+        klrt.anchorMax = Vector2.one;
+        klrt.offsetMin = new Vector2(8f, 0f);
+        klrt.offsetMax = new Vector2(-8f, 0f);
+
+        _judgmentBreakText = MakeText(breakBg.transform, "Value", 14, FontStyle.Bold, TextAnchor.MiddleRight);
+        var kvrt = _judgmentBreakText.rectTransform;
+        kvrt.anchorMin = Vector2.zero;
+        kvrt.anchorMax = Vector2.one;
+        kvrt.offsetMin = new Vector2(8f, 0f);
+        kvrt.offsetMax = new Vector2(-8f, 0f);
 
         // 남은 시간 바(좌→우로 줄어든다)
         var barBg = MakeImage(root.transform, "TimeBg", new Color(0f, 0f, 0f, 0.55f));

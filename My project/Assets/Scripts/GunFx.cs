@@ -71,9 +71,13 @@ public static class GunFx
     /// <summary>
     /// 레이저 탄착 FX(에너지 작렬 + 튀는 플라즈마 + 확산 링).
     /// 하나를 만들어 재사용한다 — Spawn(pos, normal)로 발동. 먼지/파편은 쓰지 않는다.
+    ///
+    /// critical이면 약점(머리) 전용 탄착이 된다 — 더 크게 터지고 입자가 두 배로 튀며
+    /// 점광원이 한 번 번쩍여, 몸통에 맞았을 때와 화면에서 확실히 구분된다.
     /// </summary>
-    public static ImpactFx BuildImpact(float scale, Color color)
+    public static ImpactFx BuildImpact(float scale, Color color, bool critical = false)
     {
+        if (critical) scale *= 1.7f;
         Color hot = HotCore(color);
 
         // 작렬: 맞은 자리가 하얗게 타는 순간
@@ -110,7 +114,20 @@ public static class GunFx
         Grow(ring, 2.5f);
         FadeOut(ring, color, new Color(color.r, color.g, color.b, 0f));
 
-        return new ImpactFx(flash, sparks, ring);
+        // 약점 명중은 빛까지 터뜨린다 — 총구 화염과 같은 방식의 1회성 점광원
+        LightPulse pulse = null;
+        if (critical)
+        {
+            var light = flash.gameObject.AddComponent<Light>();
+            light.type = LightType.Point;
+            light.color = color;
+            light.range = 2.5f * scale;
+            light.intensity = 0f;
+            pulse = flash.gameObject.AddComponent<LightPulse>();
+            pulse.Init(light, peakIntensity: 5f, decayTime: 0.12f);
+        }
+
+        return new ImpactFx(flash, sparks, ring, critical ? 2.2f : 1f, pulse);
     }
 
     /// <summary>레이저 코어용: 채도를 낮춰 흰빛에 가깝게(과열된 중심부 표현).</summary>
@@ -147,11 +164,16 @@ public static class GunFx
     public class ImpactFx
     {
         private readonly ParticleSystem _flash, _sparks, _ring;
+        private readonly float _burst;      // 방출량 배수(약점 탄착은 더 많이 튄다)
+        private readonly LightPulse _light; // 약점 탄착에만 있다
+
         public GameObject Root => _flash != null ? _flash.gameObject : null;
 
-        internal ImpactFx(ParticleSystem flash, ParticleSystem sparks, ParticleSystem ring)
+        internal ImpactFx(ParticleSystem flash, ParticleSystem sparks, ParticleSystem ring,
+                          float burst = 1f, LightPulse light = null)
         {
             _flash = flash; _sparks = sparks; _ring = ring;
+            _burst = burst; _light = light;
         }
 
         public void Spawn(Vector3 pos, Vector3 normal)
@@ -159,9 +181,10 @@ public static class GunFx
             if (_flash == null) return;
             // 월드 시뮬레이션이라 루트를 옮겨도 이미 방출된 입자는 제자리에 남는다
             _flash.transform.SetPositionAndRotation(pos, Quaternion.LookRotation(normal));
-            _flash.Emit(1);
-            _sparks.Emit(10);
-            _ring.Emit(1);
+            _flash.Emit(Mathf.Max(1, Mathf.RoundToInt(_burst)));
+            _sparks.Emit(Mathf.RoundToInt(10f * _burst));
+            _ring.Emit(Mathf.Max(1, Mathf.RoundToInt(_burst)));
+            if (_light != null) _light.Pulse();
         }
     }
 

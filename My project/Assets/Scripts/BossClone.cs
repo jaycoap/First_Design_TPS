@@ -51,6 +51,12 @@ public class BossClone : MonoBehaviour, IDamageable
             if (mb != null) DestroyImmediate(mb);
         var cc = go.GetComponent<CharacterController>();
         if (cc != null) DestroyImmediate(cc);
+
+        // 부위 히트박스의 콜라이더까지 정리한다(스크립트는 위에서 이미 제거됐다).
+        // 분신은 물리적으로 존재하지 않는 껍데기이며, 남겨두면 제 손끝에서 나가는
+        // 레이저를 제 팔이 가로막는다(분신의 사격은 자기 몸을 걸러내지 않는다).
+        foreach (var col in go.GetComponentsInChildren<Collider>(true))
+            if (col != null) DestroyImmediate(col);
         foreach (var r in go.GetComponentsInChildren<Renderer>(true))
         {
             if (r == null) continue;
@@ -140,6 +146,7 @@ public class BossClone : MonoBehaviour, IDamageable
             to = hit.point;
 
         if (_beam != null) _beam.Fire(from, to, 0.6f);
+        GameSfx.PlayAt(Sfx.BossLaser, from, pitch: Random.Range(0.95f, 1.08f));
 
         if (_targetDamage != null && _target != null)
         {

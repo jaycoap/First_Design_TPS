@@ -70,6 +70,9 @@ public class PlayerShooter : MonoBehaviour
     [SerializeField] private Color laserColor = new Color(0.35f, 0.8f, 1f);
     [Tooltip("빔이 화면에 남아있는 시간(초). 길수록 광선처럼 이어져 보인다.")]
     [SerializeField] private float beamDuration = 0.07f;
+    [Tooltip("약점(머리) 명중 탄착 색. 일반 탄착과 확실히 구분되도록 다른 색을 쓴다.\n" +
+             "이 색으로 더 크게 터지고 빛이 한 번 번쩍인다.")]
+    [SerializeField] private Color critImpactColor = new Color(1f, 0.82f, 0.25f);
 
     [Header("이펙트(선택)")]
     [Tooltip("직접 만든 총구 FX. 비우면 GunFx가 레이저 방출 FX를 자동 생성.")]
@@ -96,6 +99,7 @@ public class PlayerShooter : MonoBehaviour
     private bool _barrelResolved;
     private GunFx.MuzzleFx _muzzleFx;                    // 재사용형 총구 화염(자동 생성)
     private GunFx.ImpactFx _impactFx;                    // 재사용형 탄착 FX
+    private GunFx.ImpactFx _critImpactFx;                // 약점(머리) 전용 탄착 FX
     private float _fxScale;
     private int _ammo;                                   // 현재 탄약
     private bool _reloading;
@@ -129,6 +133,22 @@ public class PlayerShooter : MonoBehaviour
         }
     }
 
+    // ---- 퍼짐/반동 수치(협공 고스트가 배율을 곱해 그대로 쓴다 → 총이 같으면 감각도 같다) ----
+    /// <summary>기본 퍼짐 반각(도).</summary>
+    public float SpreadBase => spreadBase;
+    /// <summary>한 발마다 늘어나는 퍼짐(도).</summary>
+    public float SpreadPerShot => spreadPerShot;
+    /// <summary>퍼짐 상한(도).</summary>
+    public float SpreadMax => spreadMax;
+    /// <summary>초당 퍼짐 회복량(도/초).</summary>
+    public float SpreadRecovery => spreadRecovery;
+    /// <summary>마지막 발사 후 회복이 시작되기까지의 지연(초).</summary>
+    public float SpreadRecoveryDelay => spreadRecoveryDelay;
+    /// <summary>한 발당 총구가 들리는 각도(도).</summary>
+    public float RecoilPitch => recoilPitch;
+    /// <summary>한 발당 좌우로 밀리는 최대 각도(도).</summary>
+    public float RecoilYaw => recoilYaw;
+
     /// <summary>시간역행 적용: 탄약을 기록 시점 값으로 되돌린다(진행 중 재장전은 취소).</summary>
     public void RewindAmmo(int ammo)
     {
@@ -159,6 +179,7 @@ public class PlayerShooter : MonoBehaviour
     {
         // 탄착 FX 루트는 씬 최상위에 생성되므로 직접 정리
         if (_impactFx != null && _impactFx.Root != null) Destroy(_impactFx.Root);
+        if (_critImpactFx != null && _critImpactFx.Root != null) Destroy(_critImpactFx.Root);
     }
 
     private void Update()
@@ -298,15 +319,17 @@ public class PlayerShooter : MonoBehaviour
 
             // 데미지 전달 + 명중 시 타임포스 획득
             var damageable = hit.collider.GetComponentInParent<IDamageable>();
+            bool weakPoint = damageable is BossHitbox part && part.IsWeakPoint;
             if (damageable != null)
             {
                 damageable.TakeDamage(damage, hit.point, hit.normal);
                 if (_stats == null) _stats = GetComponent<PlayerStats>();
+                // 약점(머리)에 맞히면 타임포스를 더 준다 — 정확히 쏠수록 시간 능력이 빨리 돌아온다
                 if (_stats != null && !ReferenceEquals(damageable, _stats))
-                    _stats.GainTimeForceOnHit();
+                    _stats.GainTimeForceOnHit(weakPoint);
             }
 
-            SpawnImpact(hit.point, hit.normal);
+            SpawnImpact(hit.point, hit.normal, weakPoint);
         }
 
         // 총구 위치(총 메시 실측 끝) / 발사 방향
@@ -341,6 +364,8 @@ public class PlayerShooter : MonoBehaviour
             }
             _tracerHideTime = Time.time + beamDuration;
         }
+
+        GameSfx.Play(Sfx.PlayerFire, pitch: Random.Range(0.95f, 1.05f));
 
         _lastFireTime = Time.time;
         if (animator != null && animator.runtimeAnimatorController != null)
@@ -384,6 +409,7 @@ public class PlayerShooter : MonoBehaviour
         _reloading = true;
         _reloadStartTime = Time.time;
         _reloadStateSeen = false;
+        GameSfx.Play(Sfx.Reload);
         if (animator != null && animator.runtimeAnimatorController != null)
         {
             // 마지막 발에서 자동 재장전이 걸리면 소비되지 않은 Fire 트리거가 남아 있다.
@@ -459,12 +485,22 @@ public class PlayerShooter : MonoBehaviour
         return (dir + camT.right * r.x + camT.up * r.y).normalized;
     }
 
-    private void SpawnImpact(Vector3 pos, Vector3 normal)
+    /// <summary>탄착 이펙트. 약점(머리)에 맞으면 색·크기·소리가 다른 전용 FX가 터진다.</summary>
+    private void SpawnImpact(Vector3 pos, Vector3 normal, bool weakPoint = false)
     {
+        GameSfx.PlayAt(weakPoint ? Sfx.CritImpact : Sfx.Impact, pos);
+
         if (impactPrefab != null)
         {
             GameObject fx = Instantiate(impactPrefab, pos, Quaternion.LookRotation(normal));
             Destroy(fx, 3f);
+            return;
+        }
+
+        if (weakPoint)
+        {
+            _critImpactFx ??= GunFx.BuildImpact(_fxScale, critImpactColor, critical: true);
+            _critImpactFx.Spawn(pos, normal);
             return;
         }
         _impactFx ??= GunFx.BuildImpact(_fxScale, laserColor);

@@ -471,7 +471,7 @@ MonoBehaviour:
   transitionSpeed: 12
   collisionMask:
     serializedVersion: 2
-    m_Bits: 4294966527
+    m_Bits: 4294965503
   collisionRadius: 0.022114461
   rewindFovBoost: 20
   rewindDistanceMul: 1.6
@@ -511,7 +511,7 @@ MonoBehaviour:
   range: 200
   hitMask:
     serializedVersion: 2
-    m_Bits: 4294966527
+    m_Bits: 4294964479
 --- !u!1 &333473924
 GameObject:
   m_ObjectHideFlags: 0
@@ -1540,26 +1540,6 @@ PrefabInstance:
       propertyPath: target
       value: 
       objectReference: {fileID: 839762385}
-    - target: {fileID: 5997300376641108817, guid: 3f2013c6838564444b6a37e6cf04e3e6, type: 3}
-      propertyPath: laserRange
-      value: 100
-      objectReference: {fileID: 0}
-    - target: {fileID: 5997300376641108817, guid: 3f2013c6838564444b6a37e6cf04e3e6, type: 3}
-      propertyPath: meleeAngle
-      value: 100
-      objectReference: {fileID: 0}
-    - target: {fileID: 5997300376641108817, guid: 3f2013c6838564444b6a37e6cf04e3e6, type: 3}
-      propertyPath: meleeRange
-      value: 2
-      objectReference: {fileID: 0}
-    - target: {fileID: 5997300376641108817, guid: 3f2013c6838564444b6a37e6cf04e3e6, type: 3}
-      propertyPath: laserDamage
-      value: 25
-      objectReference: {fileID: 0}
-    - target: {fileID: 5997300376641108817, guid: 3f2013c6838564444b6a37e6cf04e3e6, type: 3}
-      propertyPath: meleeDamage
-      value: 15
-      objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
@@ -2791,6 +2771,10 @@ PrefabInstance:
       propertyPath: tpsCamera
       value: 
       objectReference: {fileID: 330585548}
+    - target: {fileID: 317775143092253232, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      propertyPath: hitMask.m_Bits
+      value: 1079
+      objectReference: {fileID: 0}
     - target: {fileID: 615853188318488130, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: m_LocalPosition.x
       value: 0
@@ -2835,6 +2819,10 @@ PrefabInstance:
       propertyPath: tpsCamera
       value: 
       objectReference: {fileID: 330585548}
+    - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      propertyPath: aimMask.m_Bits
+      value: 1079
+      objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []

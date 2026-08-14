@@ -32,6 +32,9 @@ public class PlayerStats : MonoBehaviour, IDamageable
     [SerializeField] private float timeForceOnDodge = 1f;
     [Tooltip("공격을 적에게 명중시켰을 때 획득량")]
     [SerializeField] private float timeForceOnHit = 1f;
+    [Tooltip("약점(머리 등 배율 1 초과 부위)에 명중시켰을 때 획득량.\n" +
+             "정확히 쏠수록 시간 능력을 빨리 쓸 수 있게 하는 보상.")]
+    [SerializeField] private float timeForceOnWeakPointHit = 3f;
 
     private float _health, _stamina, _timeForce;
     private float _lastStaminaUseTime;
@@ -83,7 +86,9 @@ public class PlayerStats : MonoBehaviour, IDamageable
         => _timeForce = Mathf.Clamp(_timeForce + amount, 0f, maxTimeForce);
 
     /// <summary>공격이 적에게 명중했을 때 호출(PlayerShooter). 타임포스 획득.</summary>
-    public void GainTimeForceOnHit() => AddTimeForce(timeForceOnHit);
+    /// <param name="weakPoint">머리 등 약점 부위였는가(획득량이 늘어난다).</param>
+    public void GainTimeForceOnHit(bool weakPoint = false)
+        => AddTimeForce(weakPoint ? timeForceOnWeakPointHit : timeForceOnHit);
 
     /// <summary>타임포스 소모(과거 지원 요청/회귀 발동 시). 부족하면 false.</summary>
     public bool TryUseTimeForce(float amount)
@@ -114,6 +119,7 @@ public class PlayerStats : MonoBehaviour, IDamageable
         }
 
         _health = Mathf.Max(0f, _health - amount);
+        GameSfx.Play(Sfx.PlayerHurt); // 회피(구르기)로 흘렸을 때는 위에서 이미 빠져나갔다
         if (IsDead)
             Debug.Log("[PlayerStats] 플레이어 사망 — 사망 연출/리스폰은 추후 구현 지점.");
     }

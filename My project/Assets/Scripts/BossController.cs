@@ -129,7 +129,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     [SerializeField] private float judgmentDamage = 34f;
     [Tooltip("일제 사격 간격(초). 구르기 무적으로 전부 흘릴 수 없도록 넉넉히 벌린다.")]
     [SerializeField] private float judgmentVolleyStagger = 0.12f;
-    [Tooltip("협공으로 파훼했을 때 진짜 보스가 받는 피해")]
+    [Tooltip("파훼에 필요한 명중 횟수. 협공(과거의 나)과 일반 사격이 함께 이 횟수를 채워야 한다.\n" +
+             "한 발로 끝나지 않게 하는 값이므로, 충전 시간 안에 퍼부을 수 있는 탄수를 보고 조절한다.")]
+    [SerializeField] private int judgmentBreakHits = 45;
+    [Tooltip("파훼에 성공한 순간 진짜 보스가 받는 피해(누적 명중은 체력을 깎지 않는다)")]
     [SerializeField] private float judgmentBreakDamage = 120f;
     [Tooltip("파훼 직후 무방비로 굳어 있는 시간(초)")]
     [SerializeField] private float judgmentStunTime = 1.4f;
@@ -179,6 +182,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     // 분신 처형 패턴
     private bool _judgmentActive, _judgmentDone, _judgmentBroken;
     private float _judgmentEndTime;
+    private int _judgmentHits;           // 이번 패턴에서 누적한 명중 횟수(협공 + 일반 사격)
     private int _judgmentIgnoreSession;  // 패턴 시작 시점에 이미 날아오던 협공(무효)
     private readonly List<BossClone> _clones = new List<BossClone>();
 
@@ -197,6 +201,11 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     private float _flashUntil;
     private bool _flashApplied;
     private bool _hidden;
+
+    // 부위 히트박스(없으면 몸 전체가 같은 피해를 받는 예전 동작 그대로)
+    private BossHitbox[] _hitboxes = new BossHitbox[0];
+    private CharacterController _playerCc;   // 히트박스를 물리 충돌에서 뺄 때만 쓴다
+    private bool _playerCcResolved;
 
     private readonly RaycastHit[] _hitBuf = new RaycastHit[12];
     private readonly Collider[] _colBuf = new Collider[12];
@@ -218,6 +227,15 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     /// <summary>일제 사격까지 남은 비율 1→0(HUD 카운트다운 바).</summary>
     public float JudgmentRemain01 => _judgmentActive && judgmentChargeTime > 0.01f
         ? Mathf.Clamp01((_judgmentEndTime - Time.time) / judgmentChargeTime)
+        : 0f;
+
+    /// <summary>파훼까지 채운 명중 횟수(HUD 진행도 표시용).</summary>
+    public int JudgmentHits => _judgmentHits;
+    /// <summary>파훼에 필요한 총 명중 횟수(HUD 진행도 표시용).</summary>
+    public int JudgmentBreakHits => judgmentBreakHits;
+    /// <summary>파훼 진행도 0→1(HUD 게이지).</summary>
+    public float JudgmentBreak01 => judgmentBreakHits > 0
+        ? Mathf.Clamp01((float)_judgmentHits / judgmentBreakHits)
         : 0f;
 
     private void Awake()
@@ -249,7 +267,39 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _renderers = GetComponentsInChildren<Renderer>();
         _mpb = new MaterialPropertyBlock();
 
+        _hitboxes = GetComponentsInChildren<BossHitbox>(true);
+        IgnoreHitboxCollisions();
+
         BuildFx();
+    }
+
+    /// <summary>
+    /// 부위 히트박스는 '총알 판정 전용'이다. 실제 물리에서는 아무것도 밀지 않도록
+    /// 보스 자신과 플레이어의 CharacterController에서 제외한다
+    /// (팔 콜라이더가 제 몸을 막아 걸음이 끊기거나 플레이어를 밀어내는 사고 방지).
+    /// 레이캐스트는 이 설정과 무관하게 그대로 맞는다.
+    ///
+    /// IgnoreCollision은 콜라이더를 껐다 켜면 풀리므로, 은신이 끝날 때마다 다시 건다.
+    /// (BossHitboxSetup이 만드는 전용 레이어의 충돌 매트릭스가 1차 방어선이고, 이건 이중 안전장치)
+    /// </summary>
+    private void IgnoreHitboxCollisions()
+    {
+        if (_hitboxes.Length == 0) return;
+
+        if (!_playerCcResolved)
+        {
+            _playerCcResolved = true;
+            var player = FindFirstObjectByType<PlayerController>();
+            if (player != null) _playerCc = player.GetComponent<CharacterController>();
+        }
+
+        foreach (var hb in _hitboxes)
+        {
+            Collider col = hb != null ? hb.Collider : null;
+            if (col == null) continue;
+            if (_cc != null) Physics.IgnoreCollision(col, _cc, true);
+            if (_playerCc != null) Physics.IgnoreCollision(col, _playerCc, true);
+        }
     }
 
     private void OnEnable()
@@ -460,6 +510,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
         // --- 강타 ---
         claw?.SetEmitting(true);
+        GameSfx.PlayAt(Sfx.BossSwing, BodyCenter(), pitch: finisher ? 0.85f : 1f);
         bool hit = false;
         float strikeTime = meleeStrike * (finisher ? 1.25f : 1f);
         float damage = meleeDamage * meleeComboDamageScale * scale;
@@ -520,6 +571,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _orbOn = true;
         _orbCharge = 0f;
         _previewAlpha = 0f;
+        GameSfx.PlayAt(Sfx.BossCharge, MuzzlePoint());
 
         // 1) 사전 동작: 왼손을 앞으로 뻗고 검지를 겨눈다(빛이 천천히 일렁이기 시작)
         for (float t = 0f; t < laserAimTime; t += Time.deltaTime)
@@ -594,6 +646,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         if (_orb != null) _orb.Burst();
         if (_beam != null) _beam.Fire(from, to, laserBeamTime * BeamVisualStretch);
         if (_cam != null) { _cam.AddShake(0.25f, 0.25f); _cam.AddFovKick(2f); }
+        GameSfx.PlayAt(Sfx.BossLaser, from);
 
         // 착탄 이펙트(벽에 맞았을 때)
         if (RaycastIgnoreSelf(from, dir, length, out RaycastHit wall))
@@ -662,6 +715,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
         // 1) 사라짐: 제자리에서 번쩍인 뒤 모습을 감춘다
         _flash?.Spawn(BodyCenter());
+        GameSfx.PlayAt(Sfx.BossTeleport, BodyCenter(), pitch: 1.15f); // 사라질 때는 높게
         if (_cam != null) _cam.AddShake(0.15f, 0.2f);
         yield return new WaitForSeconds(teleportVanishTime * 0.5f);
         SetHidden(true);
@@ -683,6 +737,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         yield return new WaitForSeconds(teleportAppearTime * 0.5f);
         SetHidden(false);
         _flash?.Spawn(BodyCenter());
+        GameSfx.PlayAt(Sfx.BossTeleport, BodyCenter(), pitch: 0.8f); // 나타날 때는 낮고 무겁게
         if (_cam != null) { _cam.AddShake(0.45f, 0.35f); _cam.AddFovKick(-2.5f); }
 
         // 등장 충격파: 플레이어의 발을 묶고, 하늘에서 운석이 쏟아진다
@@ -821,6 +876,14 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         foreach (var r in _renderers)
             if (r != null && !(r is ParticleSystemRenderer) && !(r is TrailRenderer))
                 r.enabled = !hidden;
+
+        // 안 보이는 동안엔 총알 판정도 사라져야 한다(빈 자리에 총알이 맞지 않도록)
+        foreach (var hb in _hitboxes)
+            if (hb != null && hb.Collider != null)
+                hb.Collider.enabled = !hidden;
+
+        // 콜라이더를 다시 켜면 IgnoreCollision 설정이 풀린다 → 다시 걸어 준다
+        if (!hidden) IgnoreHitboxCollisions();
     }
 
     // ---------- 분신 처형(체력 30%) ----------
@@ -828,7 +891,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     /// <summary>
     /// 체력 30% 패턴. 맵 밖 원주에 진짜 보스를 포함한 (분신 수+1)기가 늘어서서
     /// 일제히 레이저를 충전한다. 진짜만 충전 색이 다르며, 제한 시간 안에
-    /// "과거의 나(고스트)와의 협공"으로 진짜를 때려야 파훼된다.
+    /// 진짜에게 judgmentBreakHits발을 명중시켜야 파훼된다(협공 + 일반 사격 합산).
     /// 파훼하지 못하면 전원이 시차를 두고 발사해 플레이어를 확실히 쓰러뜨린다.
     /// </summary>
     private IEnumerator JudgmentRoutine()
@@ -836,6 +899,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _busy = true;
         _judgmentActive = true;
         _judgmentBroken = false;
+        _judgmentHits = 0;
         _phase = Phase.Judgment;
         SetAnimSpeed(0f);
 
@@ -893,6 +957,8 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _judgmentEndTime = Time.time + judgmentChargeTime;
         _orbOn = true;
         _aimDir = AimDirection();
+        // 충전음은 진짜 보스 것 하나만 울린다(분신까지 울리면 10겹으로 뭉개진다)
+        GameSfx.PlayAt(Sfx.BossCharge, BodyCenter(), volume: 1.3f, pitch: 0.7f);
 
         while (Time.time < _judgmentEndTime && !_judgmentBroken)
         {
@@ -949,7 +1015,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
             SetAnimSpeed(0f); // 아직 맵 밖이라 중력은 주지 않는다
             yield return null;
         }
-        Debug.Log("[Boss] 분신 처형 파훼 — 협공이 진짜를 꿰뚫었다.");
+        Debug.Log($"[Boss] 분신 처형 파훼 — 진짜에게 {judgmentBreakHits}발을 꽂았다.");
     }
 
     /// <summary>파훼 실패: 전원이 시차를 두고 발사한다(구르기 한 번으로는 다 흘릴 수 없다).</summary>
@@ -1044,27 +1110,40 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
     // ---------- 피격 / 사망 ----------
 
+    /// <summary>부위를 거치지 않은 직격(몸통 콜라이더/광역 피해 등).</summary>
     public void TakeDamage(float amount, Vector3 hitPoint, Vector3 hitNormal)
+        => TakeDamage(amount, hitPoint, hitNormal, null);
+
+    /// <summary>
+    /// 피해 적용. part가 있으면 BossHitbox가 배율을 이미 곱해 넘긴 값이며,
+    /// 여기서는 연출(약점은 점멸을 길게)에만 쓴다.
+    /// </summary>
+    public void TakeDamage(float amount, Vector3 hitPoint, Vector3 hitNormal, BossHitbox part)
     {
         if (_phase == Phase.Dead) return;
 
-        // 분신 처형 중에는 '과거의 나와의 협공'만 통한다.
-        // 일반 사격으로는 진짜를 찾아내도 파훼할 수 없다(이 패턴의 유일한 해법).
+        // 분신 처형 중에는 체력이 깎이지 않는다 — '진짜'에게 명중시킨 횟수만 쌓이고,
+        // judgmentBreakHits발을 채우는 순간 파훼된다. 협공 한 발로 즉시 끝나지 않으므로
+        // 진짜를 찾아낸 뒤에도 남은 시간 동안 협공과 사격을 함께 퍼부어야 한다.
         if (_judgmentActive)
         {
-            if (!TimeShiftController.GhostDamageActive) return;
+            // 패턴이 시작되기 전에 이미 발동해 있던 협공은 진행도를 채우지 못한다.
+            // (협공은 초당 여러 발이라, 체력을 30%로 만든 그 협공의 남은 탄이
+            //  방금 시작된 패턴의 진행도를 공짜로 채워 버리는 '패턴 씹힘'이 생긴다)
+            if (TimeShiftController.GhostDamageActive
+                && TimeShiftController.SupportSession == _judgmentIgnoreSession) return;
 
-            // 패턴이 시작되기 전에 이미 발동해 있던 협공은 인정하지 않는다.
-            // (협공은 초당 여러 발이라, 체력을 30%로 만든 그 협공의 다음 탄이
-            //  방금 시작된 패턴을 즉시 파훼해 버리는 '패턴 씹힘'이 생긴다)
-            if (TimeShiftController.SupportSession == _judgmentIgnoreSession) return;
+            _judgmentHits++;
+            _flashUntil = Time.time + 0.07f;
+            if (_judgmentHits < judgmentBreakHits) return;
 
             _judgmentBroken = true;
-            amount = Mathf.Max(amount, judgmentBreakDamage);
+            amount = judgmentBreakDamage;
         }
 
         _health = Mathf.Max(0f, _health - amount);
-        _flashUntil = Time.time + 0.07f;
+        // 약점(머리 등)에 맞으면 점멸을 길게 줘서 "잘 맞췄다"가 화면으로 드러나게 한다
+        _flashUntil = Time.time + (part != null && part.IsWeakPoint ? 0.16f : 0.07f);
 
         if (_health <= 0f) { Die(); return; }
 
@@ -1084,6 +1163,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         ResetAttackState();
         _phase = Phase.Dead;
         SetAnimSpeed(0f);
+        GameSfx.PlayAt(Sfx.BossDeath, BodyCenter());
         if (animator != null && animator.runtimeAnimatorController != null)
             animator.SetTrigger(DieHash);
         Debug.Log("[Boss] AlienMonster 처치.");

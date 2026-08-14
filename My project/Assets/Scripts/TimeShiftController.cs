@@ -41,6 +41,10 @@ public class TimeShiftController : MonoBehaviour
     [SerializeField] private float supportRange = 200f;
     [Tooltip("협공 발동 키. 사격 중에도 그대로 누를 수 있다.")]
     [SerializeField] private Key supportKey = Key.G;
+    [Tooltip("과거의 나가 쏠 때의 탄 퍼짐·반동 = 플레이어 수치 × 이 값.\n" +
+             "1.5면 플레이어보다 반동이 세고 더 흩어져, 협공만으로는 표적을 계속 맞히지 못한다.\n" +
+             "0이면 예전처럼 무조건 명중.")]
+    [SerializeField] private float ghostSpreadScale = 1.5f;
 
     /// <summary>선택 모드 중인가(전역). PlayerShooter/카메라가 참조해 입력 충돌을 막는다.</summary>
     public static bool DecisionActive { get; private set; }
@@ -62,6 +66,38 @@ public class TimeShiftController : MonoBehaviour
 
     /// <summary>협공 사격이 진행 중인가(전역).</summary>
     public static bool SupportActive { get; private set; }
+
+    /// <summary>
+    /// 능력을 눌렀는데 발동하지 않은 이유(HUD 토스트용). 예전에는 조건이 안 맞으면
+    /// 아무 반응 없이 무시돼, 왜 안 되는지 알 방법이 없었다.
+    /// </summary>
+    public static string LastDenyReason { get; private set; }
+    /// <summary>위 사유가 기록된 시각(Time.unscaledTime). HUD가 잠깐만 띄우는 데 쓴다.</summary>
+    public static float LastDenyTime { get; private set; }
+
+    // ---- HUD 표시용 ----
+    /// <summary>시간역행 비용(HUD 게이지 눈금).</summary>
+    public float RewindCost => rewindCost;
+    /// <summary>협공 비용(HUD 게이지 눈금).</summary>
+    public float SupportCost => supportCost;
+    /// <summary>과거의 나가 준비됐는가(히스토리 축적 완료).</summary>
+    public bool GhostReady => _ghost != null && _ghost.GhostReady;
+    /// <summary>협공이 끝나기까지 남은 비율 1→0(진행 중이 아니면 0).</summary>
+    public float SupportRemain01 => SupportActive && supportDuration > 0.01f
+        ? Mathf.Clamp01((_supportEndTime - Time.time) / supportDuration)
+        : 0f;
+
+    private float _supportEndTime;
+    private string _msgRecharge = "과거의 나 재충전 중";
+    private string _msgNoTarget = "겨누는 대상이 없다";
+    private string _msgNoForce = "타임포스 부족";
+
+    /// <summary>발동 실패 사유 기록(HUD가 1.6초간 표시).</summary>
+    private void Deny(string reason)
+    {
+        LastDenyReason = reason;
+        LastDenyTime = Time.unscaledTime;
+    }
 
     /// <summary>진행 중인 협공을 즉시 중단시킨다(보스 패턴 진입 등 외부 개입).</summary>
     public static void CancelSupport()
@@ -86,6 +122,18 @@ public class TimeShiftController : MonoBehaviour
     private float _tracerHide;
     private GunFx.MuzzleFx _ghostMuzzleFx;
     private GunFx.ImpactFx _ghostImpactFx;
+    private GunFx.ImpactFx _ghostCritImpactFx;   // 약점(머리) 명중 전용(첫 명중 때 생성)
+
+    // 고스트의 탄 퍼짐/반동(플레이어 수치 × ghostSpreadScale). 협공 한 세션 동안 누적된다.
+    private float _ghostSpread;
+    private float _ghostSpreadHold;   // 이 시각까지는 퍼짐 회복 보류
+    private float _ghostPitch;        // 누적 반동 — 총구가 들린 각도(도)
+    private float _ghostYaw;          // 누적 반동 — 좌우로 밀린 각도(도)
+
+    /// <summary>반동 누적 상한 = 한 발 반동 × 이 값(계속 쏴도 조준선에서 이만큼 이상은 벗어나지 않는다).</summary>
+    private const float GhostRecoilCap = 1.5f;
+    /// <summary>반동 회복 속도 = 초당 누적량 × 이 값(1보다 작으므로 연사하면 서서히 밀려 올라간다).</summary>
+    private const float GhostRecoilRecovery = 0.7f;
 
     // 선택 UI(코드 생성 uGUI)
     private GameObject _panel;
@@ -108,6 +156,10 @@ public class TimeShiftController : MonoBehaviour
         // 보이지 않는 낙하 방지 벽은 협공 사선을 막으면 안 된다(맵 밖의 분신을 겨눌 수 있어야 한다)
         int wallLayer = LayerMask.NameToLayer("ArenaWall");
         if (wallLayer >= 0) _mask &= ~(1 << wallLayer);
+        // 보스 본체(CharacterController) 캡슐도 제외 — 협공도 부위 히트박스에만 맞아야
+        // 부위별 배율이 적용된다(몸통 캡슐이 앞을 막으면 머리 판정이 오지 않는다)
+        int bossBodyLayer = LayerMask.NameToLayer(BossHitbox.BodyLayer);
+        if (bossBodyLayer >= 0) _mask &= ~(1 << bossBodyLayer);
         if (_cc != null) _fxScale = _cc.height / 1.8f;
 
         _tracer = CreateGhostTracer();
@@ -120,6 +172,7 @@ public class TimeShiftController : MonoBehaviour
     private void OnDestroy()
     {
         if (_ghostImpactFx != null && _ghostImpactFx.Root != null) Destroy(_ghostImpactFx.Root);
+        if (_ghostCritImpactFx != null && _ghostCritImpactFx.Root != null) Destroy(_ghostCritImpactFx.Root);
     }
 
     private void OnDisable()
@@ -150,6 +203,8 @@ public class TimeShiftController : MonoBehaviour
         if (_tracer != null && _tracer.enabled && Time.unscaledTime >= _tracerHide)
             _tracer.enabled = false;
 
+        if (_support != null) RecoverGhostAim(); // 협공 중 고스트의 반동/퍼짐 회복
+
         if (Keyboard.current == null || Mouse.current == null) return;
 
         if (!DecisionActive)
@@ -158,9 +213,13 @@ public class TimeShiftController : MonoBehaviour
             if (Keyboard.current[supportKey].wasPressedThisFrame)
                 TryStartSupport();
 
-            if (Keyboard.current.tKey.wasPressedThisFrame && _support == null && !RewindActive
-                && _ghost.GhostReady && HasForce(Mathf.Min(rewindCost, supportCost)))
-                BeginDecision();
+            // 조건이 안 맞으면 왜 안 되는지 알려 준다(예전에는 아무 반응이 없었다)
+            if (Keyboard.current.tKey.wasPressedThisFrame && _support == null && !RewindActive)
+            {
+                if (!_ghost.GhostReady) Deny(_msgRecharge);
+                else if (!HasForce(Mathf.Min(rewindCost, supportCost))) Deny(_msgNoForce);
+                else BeginDecision();
+            }
             return;
         }
 
@@ -216,6 +275,7 @@ public class TimeShiftController : MonoBehaviour
         });
         if (!started) return;
 
+        GameSfx.Play(Sfx.TimeRewind);
         RewindActive = true;
         if (_tpsCam != null)
         {
@@ -233,15 +293,16 @@ public class TimeShiftController : MonoBehaviour
     /// </summary>
     private void TryStartSupport()
     {
-        if (_support != null || RewindActive) return;
-        if (!_ghost.GhostReady) return;
+        if (_support != null || RewindActive) return;   // 이미 쓰는 중 — 알릴 것도 없다
+        if (!_ghost.GhostReady) { Deny(_msgRecharge); return; }
 
         Transform target = FindAimedTarget();
-        if (target == null) return;          // 허공을 겨눈 협공은 발동하지 않는다
-        if (!TryUseForce(supportCost)) return;
+        if (target == null) { Deny(_msgNoTarget); return; }   // 허공을 겨눈 협공은 발동하지 않는다
+        if (!TryUseForce(supportCost)) { Deny(_msgNoForce); return; }
 
         SupportSession++;
         SupportActive = true;
+        GameSfx.Play(Sfx.TimeSupport);
         _support = StartCoroutine(SupportFireRoutine(target));
     }
 
@@ -250,8 +311,10 @@ public class TimeShiftController : MonoBehaviour
     {
         _ghost.SetFrozen(true);
         _ghost.SetGhostAnimating(true); // 과거 자세와 무관하게 총을 겨눈 모습으로
+        ResetGhostAim();                // 반동/퍼짐은 세션마다 처음부터 쌓인다
 
         float end = Time.time + supportDuration;
+        _supportEndTime = end;          // HUD 진행 바
         var wait = new WaitForSeconds(1f / Mathf.Max(1f, supportFireRate));
         while (Time.time < end)
         {
@@ -359,7 +422,9 @@ public class TimeShiftController : MonoBehaviour
         if (_shooter != null && _shooter.TryResolveMuzzle(gun, aim - gun.position, out Vector3 tip, out _))
             origin = tip;
 
-        Vector3 dir = (aim - origin).normalized;
+        // 겨눈 방향에 반동과 탄 퍼짐을 얹는다 — 빗나가면 그대로 빗나간다.
+        // (예전에는 레이가 빗나가도 겨눈 적에게 무조건 명중시켰지만, 그러면 반동·퍼짐이 무의미하다)
+        Vector3 dir = ApplyGhostAim((aim - origin).normalized);
         Vector3 endPoint = origin + dir * supportRange;
 
         if (Physics.Raycast(origin, dir, out RaycastHit hit, supportRange, _mask, QueryTriggerInteraction.Ignore))
@@ -367,24 +432,97 @@ public class TimeShiftController : MonoBehaviour
             endPoint = hit.point;
             var dmg = hit.collider.GetComponentInParent<IDamageable>();
             if (dmg != null) DealGhostDamage(dmg, supportDamage, hit.point, hit.normal);
-            _ghostImpactFx.Spawn(hit.point, hit.normal);
+
+            // 약점(머리)에 맞으면 협공도 플레이어와 같은 규칙으로 다른 탄착을 터뜨린다
+            bool crit = dmg is BossHitbox part && part.IsWeakPoint;
+            GameSfx.PlayAt(crit ? Sfx.CritImpact : Sfx.Impact, hit.point);
+            if (crit)
+            {
+                // 고스트 색을 유지한 채 뜨거운 쪽으로 밀어 '약점 명중'으로 읽히게 한다
+                _ghostCritImpactFx ??= GunFx.BuildImpact(
+                    _fxScale, Color.Lerp(ghostLaserColor, new Color(1f, 0.82f, 0.25f), 0.75f), critical: true);
+                _ghostCritImpactFx.Spawn(hit.point, hit.normal);
+            }
+            else _ghostImpactFx.Spawn(hit.point, hit.normal);
         }
-        else if (target != null)
-        {
-            // 레이가 빗나가도(얇은 콜라이더 등) 조준한 적에겐 확실히 명중시킨다
-            endPoint = aim;
-            var dmg2 = target.GetComponentInParent<IDamageable>();
-            if (dmg2 != null) DealGhostDamage(dmg2, supportDamage, aim, -dir);
-            _ghostImpactFx.Spawn(aim, -dir);
-        }
+        AddGhostRecoil();
 
         _ghost.TriggerGhostFire(); // 발사 모션(상체)
+        GameSfx.PlayAt(Sfx.GhostFire, origin, pitch: Random.Range(0.92f, 1.02f));
         _ghostMuzzleFx.Fire(origin, dir);
         _tracer.enabled = true;
         _tracer.positionCount = 2;
         _tracer.SetPosition(0, origin);
         _tracer.SetPosition(1, endPoint);
         _tracerHide = Time.unscaledTime + 0.04f;
+    }
+
+    // ---------- 고스트의 반동 / 탄 퍼짐 ----------
+    // 수치는 플레이어의 총 그대로에 ghostSpreadScale(기본 1.5)을 곱한 값이다.
+    // 과거의 나는 반동을 잡아 주지 못하므로, 길게 쏠수록 총구가 들리고 탄이 벌어진다
+    // → 협공만으로는 표적을 계속 맞히지 못하고, 플레이어의 사격이 함께 필요해진다.
+
+    /// <summary>협공 세션 시작 시 반동/퍼짐을 초기 상태로 되돌린다.</summary>
+    private void ResetGhostAim()
+    {
+        _ghostPitch = 0f;
+        _ghostYaw = 0f;
+        _ghostSpread = _shooter != null ? _shooter.SpreadBase * ghostSpreadScale : 0f;
+        _ghostSpreadHold = 0f;
+    }
+
+    /// <summary>겨눈 방향에 지금까지 쌓인 반동(위로 들림 + 좌우 밀림)과 퍼짐을 얹는다.</summary>
+    private Vector3 ApplyGhostAim(Vector3 dir)
+    {
+        if (ghostSpreadScale <= 0.001f || _shooter == null) return dir;
+
+        Vector3 right = Vector3.Cross(Vector3.up, dir);
+        right = right.sqrMagnitude > 1e-6f ? right.normalized : Vector3.right;
+
+        // 반동: 조준선이 통째로 어긋난다(총구가 들리는 쪽이 -pitch)
+        dir = Quaternion.AngleAxis(-_ghostPitch, right) * dir;
+        dir = Quaternion.AngleAxis(_ghostYaw, Vector3.up) * dir;
+
+        // 퍼짐: 현재 반각의 원뿔 안에서 균일하게 흩뜨린다(플레이어와 같은 방식)
+        if (_ghostSpread > 0.001f)
+        {
+            Vector3 up = Vector3.Cross(dir, right).normalized;
+            Vector2 r = Random.insideUnitCircle * Mathf.Tan(_ghostSpread * Mathf.Deg2Rad);
+            dir = (dir + right * r.x + up * r.y).normalized;
+        }
+        return dir;
+    }
+
+    /// <summary>한 발 쏜 뒤: 반동을 상한까지 누적하고 퍼짐을 벌린다.</summary>
+    private void AddGhostRecoil()
+    {
+        if (ghostSpreadScale <= 0.001f || _shooter == null) return;
+
+        float pitchStep = _shooter.RecoilPitch * ghostSpreadScale;
+        float yawStep = _shooter.RecoilYaw * ghostSpreadScale;
+        _ghostPitch = Mathf.Min(_ghostPitch + pitchStep, pitchStep * GhostRecoilCap);
+        _ghostYaw = Mathf.Clamp(_ghostYaw + Random.Range(-yawStep, yawStep),
+                                -yawStep * GhostRecoilCap, yawStep * GhostRecoilCap);
+
+        _ghostSpread = Mathf.Min(_shooter.SpreadMax * ghostSpreadScale,
+                                 _ghostSpread + _shooter.SpreadPerShot * ghostSpreadScale);
+        _ghostSpreadHold = Time.time + _shooter.SpreadRecoveryDelay * ghostSpreadScale;
+    }
+
+    /// <summary>협공 중 매 프레임 회복. 퍼짐은 플레이어와 같은 규칙, 반동은 누적 속도의 일부만.</summary>
+    private void RecoverGhostAim()
+    {
+        if (ghostSpreadScale <= 0.001f || _shooter == null) return;
+
+        float baseSpread = _shooter.SpreadBase * ghostSpreadScale;
+        if (_ghostSpread > baseSpread && Time.time >= _ghostSpreadHold)
+            _ghostSpread = Mathf.Max(baseSpread,
+                _ghostSpread - _shooter.SpreadRecovery * ghostSpreadScale * Time.deltaTime);
+
+        float recover = _shooter.RecoilPitch * ghostSpreadScale * supportFireRate
+                        * GhostRecoilRecovery * Time.deltaTime;
+        _ghostPitch = Mathf.MoveTowards(_ghostPitch, 0f, recover);
+        _ghostYaw = Mathf.MoveTowards(_ghostYaw, 0f, recover);
     }
 
     /// <summary>
@@ -432,6 +570,12 @@ public class TimeShiftController : MonoBehaviour
             _uiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             korean = false; // 내장 폰트는 한글 미지원 → 영문 표기
         }
+
+        // 발동 실패 토스트 문구(HudUI가 같은 폰트 사정을 공유한다)
+        _msgRecharge = korean ? "과거의 나 재충전 중" : "PAST SELF RECHARGING";
+        _msgNoTarget = korean ? "겨누는 대상이 없다" : "NO TARGET";
+        _msgNoForce = korean ? $"타임포스 부족 — {supportCost:0} 필요"
+                             : $"NOT ENOUGH TIME FORCE ({supportCost:0})";
 
         var canvasGO = new GameObject("TimeShiftUI");
         canvasGO.transform.SetParent(transform, false);
