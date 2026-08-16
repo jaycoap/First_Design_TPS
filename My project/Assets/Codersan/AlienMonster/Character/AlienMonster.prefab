@@ -1301,6 +1301,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::BossRig
   elbowStraighten: 0.9
   fingerCurlAngle: 45
+  weightBlendSpeed: 14
+  dirBlendSpeed: 1000
 --- !u!114 &5997300376641108817
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1315,10 +1317,16 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::BossController
   target: {fileID: 0}
   animator: {fileID: 8471908804734178792}
-  maxHealth: 800
+  maxHealth: 2800
   walkSpeed: 1.8
   turnSpeed: 9
   gravity: -20
+  playIntro: 1
+  introDelay: 0.8
+  introHoldTime: 1.6
+  introRevealTime: 2.2
+  stage2HealthRatio: 0.7
+  stage3HealthRatio: 0.5
   meleeRange: 2
   meleeAngle: 100
   meleeDamage: 15
@@ -1328,9 +1336,20 @@ MonoBehaviour:
   meleeRecover: 0.45
   meleeLunge: 3
   meleeComboHits: 3
+  meleeHitsStage1: 1
   meleeComboInterval: 0.16
   meleeComboDamageScale: 0.55
   meleeFinisherScale: 1.6
+  rushMinRange: 3.2
+  rushMaxRange: 6
+  rushDamage: 24
+  rushCooldown: 7
+  rushWindup: 0.7
+  rushSpeed: 12
+  rushTime: 0.6
+  rushRadius: 1.2
+  rushOvershoot: 2.5
+  rushRecover: 0.75
   laserRange: 100
   laserMinRange: 3.5
   laserDamage: 25
@@ -1357,6 +1376,24 @@ MonoBehaviour:
   meteorFallTime: 1.1
   meteorInterval: 0.18
   meteorCooldown: 4
+  skyRainCooldown: 11
+  skyRainCount: 7
+  skyRainAimTime: 0.7
+  skyRainChargeTime: 0.9
+  skyRainMinRange: 3
+  aerialFirstDelay: 6
+  aerialCooldown: 18
+  aerialHeight: 0.6
+  aerialAimTime: 1.1
+  aerialBarrageCount: 10
+  aerialBarrageInterval: 0.26
+  aerialRecover: 1.2
+  orbBurstCount: 6
+  orbInterval: 0.35
+  orbDamage: 20
+  orbSpeed: 12
+  orbRadius: 1.3
+  orbLife: 4
   judgmentHealthRatio: 0.3
   judgmentCloneCount: 9
   judgmentChargeTime: 6

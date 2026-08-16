@@ -17,7 +17,7 @@ public class HudUI : MonoBehaviour
     private PlayerShooter _shooter;
     private TimeShiftController _shift;
 
-    // 시간 능력 슬롯(T 시간역행 / G 협공)
+    // 시간 능력 슬롯(T 크로노 브레이크 / G 타임 어소리티)
     private CanvasGroup _rewindChip, _supportChip;
     private Image _rewindFill, _supportFill;
     private Text _rewindState, _supportState;
@@ -260,9 +260,9 @@ public class HudUI : MonoBehaviour
         var supportColor = new Color(1f, 0.65f, 0.3f);
 
         _rewindChip = MakeAbilityChip(parent, x, y, w, rewindColor, "T",
-            _korean ? "시간역행" : "REVERSE", out _rewindFill, out _rewindState);
+            _korean ? "크로노 브레이크" : "CHRONO BREAK", out _rewindFill, out _rewindState);
         _supportChip = MakeAbilityChip(parent, x + w + gap, y, w, supportColor, "G",
-            _korean ? "협공" : "CO-ATK", out _supportFill, out _supportState);
+            _korean ? "타임 어소리티" : "TIME AUTHORITY", out _supportFill, out _supportState);
 
         // 타임포스 바 위의 비용 눈금(둘 다 같은 값이면 하나만 보인다)
         if (_stats != null && _stats.MaxTimeForce > 0f)
@@ -416,7 +416,7 @@ public class HudUI : MonoBehaviour
 
         var desc = MakeText(root.transform, "Desc", 20, FontStyle.Bold, TextAnchor.UpperCenter);
         desc.text = _korean
-            ? "충전 색이 다른 '진짜'에게  G(협공) + 사격  을 퍼부어라"
+            ? "충전 색이 다른 '진짜'에게  G(타임 어소리티) + 사격  을 퍼부어라"
             : "Pour fire into the one with a DIFFERENT charge color (G = co-attack)";
         desc.color = new Color(1f, 0.92f, 0.8f);
         var drt = desc.rectTransform;

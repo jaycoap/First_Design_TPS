@@ -283,6 +283,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     private BossFx.ClawTrail _claw, _clawLeft;
     private BossFx.RushPath _rushPath;   // 돌진 예비동작 중 바닥에 그려지는 통로
     private GunFx.ImpactFx _impact;
+    private ArenaWall _arena;            // 아레나(낙하 방지 벽) — 텔레포트 자리 제한에 쓴다
     private GunFx.ImpactFx _beamImpact;  // 레이저 착탄 전용(굵은 광선에 맞춘 큰 폭발)
     private GunFx.MuzzleFx _muzzleFx;    // 발사 순간 손끝에서 터지는 방출광
     private BossFx.ChargeOrb _realOrb;   // 분신 처형 전용(진짜만 다른 색)
@@ -539,6 +540,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
         // 공격/텔레포트 중엔 코루틴이 몸을 제어한다(제자리 유지 + 중력만)
         if (_busy) return;
+
+        // 어떤 경로로든 아레나 밖에 남았다면 스스로 안쪽으로 돌아온다.
+        // 벽은 실제 콜라이더라 밖에서는 걸어 들어올 수 없어, 그대로 두면 영영 굳어 있는다.
+        if (!IsInsideArena(transform.position, 0f) && TryPullInsideArena()) return;
 
         // --- 공중 처형: 분신 처형을 넘긴 뒤에만 열린다. 거리와 무관하게 최우선 ---
         // 체력 조건을 함께 보는 이유: 시간역행으로 체력이 되돌아가면 분신 처형은 이미
@@ -1574,6 +1579,56 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     }
 
     /// <summary>플레이어 등 뒤 → 정면 → 좌우 순으로 설 수 있는 자리를 찾는다.</summary>
+    /// <summary>씬의 아레나(없으면 null). 못 찾았을 때만 다시 찾는다.</summary>
+    private ArenaWall Arena
+    {
+        get
+        {
+            if (_arena == null) _arena = FindFirstObjectByType<ArenaWall>();
+            return _arena;
+        }
+    }
+
+    /// <summary>
+    /// 아레나 안쪽 지점인가. margin만큼 벽에서 떨어져 있어야 인정한다(보스 캡슐 반지름).
+    /// 아레나가 없는 씬이면 제한이 없으므로 항상 true.
+    /// </summary>
+    private bool IsInsideArena(Vector3 point, float margin)
+    {
+        var arena = Arena;
+        if (arena == null) return true;
+
+        Vector3 flat = point - arena.transform.position;
+        flat.y = 0f;
+        return flat.magnitude <= Mathf.Max(0.01f, arena.Radius - margin);
+    }
+
+    /// <summary>
+    /// 아레나 밖에 있는 보스를 안쪽 가장자리로 되돌린다(성공하면 true).
+    /// 벽 때문에 스스로 걸어 들어올 수 없으므로, 갇힌 것을 발견하면 순간이동으로 꺼내 준다.
+    /// </summary>
+    private bool TryPullInsideArena()
+    {
+        var arena = Arena;
+        if (arena == null) return false;
+
+        Vector3 center = arena.transform.position;
+        Vector3 flat = transform.position - center;
+        flat.y = 0f;
+        if (flat.sqrMagnitude < 1e-6f) return false;
+
+        // 벽에 다시 끼지 않도록 캡슐 지름만큼 안쪽으로 들어온다
+        float margin = _cc.radius * Mathf.Abs(transform.lossyScale.x) * 2f;
+        Vector3 spot = center + flat.normalized * Mathf.Max(0.01f, arena.Radius - margin);
+        if (TryFindFloor(spot, out float floorY)) spot.y = floorY;
+
+        _flash?.Spawn(BodyCenter());
+        WarpTo(spot);
+        _flash?.Spawn(BodyCenter());
+        Debug.LogWarning("[Boss] 아레나 밖에 있어 안쪽으로 되돌렸습니다.");
+        return true;
+    }
+
     private bool FindTeleportSpot(out Vector3 spot)
     {
         spot = transform.position;
@@ -1607,6 +1662,12 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         grounded = candidate;
         float height = _cc.height * Mathf.Abs(transform.lossyScale.y);
         float radius = _cc.radius * Mathf.Abs(transform.lossyScale.x);
+
+        // 아레나 밖은 거부한다. 벽(ArenaWall)은 실제 콜라이더라 한 번 밖으로 나가면
+        // 다시 들어오지 못하고 벽에 붙어 제자리걸음만 하게 된다.
+        // 플레이어가 벽 가까이 서 있으면 '등 뒤' 후보가 벽 너머로 잡히는데,
+        // 그 자리는 바닥도 있고 캡슐도 안 겹쳐서 아래 검사들만으로는 통과해 버린다.
+        if (!IsInsideArena(candidate, radius)) return false;
 
         if (!Physics.Raycast(candidate + Vector3.up * (height * 1.5f), Vector3.down,
                              out RaycastHit hit, height * 3f, obstacleMask, QueryTriggerInteraction.Ignore))
@@ -1856,9 +1917,15 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     {
         if (!FindTeleportSpot(out Vector3 spot))
         {
-            var arena = FindFirstObjectByType<ArenaWall>();
-            if (arena == null) return;
-            spot = arena.transform.position; // 최후 수단: 아레나 중앙
+            // 최후 수단: 아레나 중앙(없으면 플레이어 발밑). 여기서 그냥 돌아가 버리면
+            // 분신 처형 때 나갔던 맵 밖에 그대로 남아, 벽에 막혀 영영 못 돌아온다.
+            var arena = Arena;
+            spot = arena != null ? arena.transform.position
+                 : _targetT != null ? _targetT.position
+                 : transform.position;
+
+            // 아레나 원점이 바닥과 다를 수 있으므로 실제 지면을 재서 내려놓는다
+            if (TryFindFloor(spot, out float floorY)) spot.y = floorY;
         }
 
         _flash?.Spawn(BodyCenter());

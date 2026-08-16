@@ -1544,10 +1544,6 @@ PrefabInstance:
       propertyPath: target
       value: 
       objectReference: {fileID: 839762385}
-    - target: {fileID: 5997300376641108817, guid: 3f2013c6838564444b6a37e6cf04e3e6, type: 3}
-      propertyPath: maxHealth
-      value: 1600
-      objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
@@ -2829,7 +2825,23 @@ PrefabInstance:
       objectReference: {fileID: 330585548}
     - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: aimMask.m_Bits
-      value: 4294967039
+      value: 3639
+      objectReference: {fileID: 0}
+    - target: {fileID: 3938290274627670728, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      propertyPath: supportDamage
+      value: 5
+      objectReference: {fileID: 0}
+    - target: {fileID: 3938290274627670728, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      propertyPath: rewindCooldown
+      value: 15
+      objectReference: {fileID: 0}
+    - target: {fileID: 3938290274627670728, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      propertyPath: supportCooldown
+      value: 12
+      objectReference: {fileID: 0}
+    - target: {fileID: 8707906454028670067, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
+      propertyPath: staminaRegenRate
+      value: 8
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
