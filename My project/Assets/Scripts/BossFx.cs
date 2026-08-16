@@ -13,15 +13,20 @@ public static class BossFx
 {
     // ---------- 공개 API ----------
 
-    /// <summary>검지 끝(anchor)에 붙는 충전 구체. Charge(0~1)/Visible을 매 프레임 갱신해 쓴다.</summary>
-    public static ChargeOrb BuildChargeOrb(Transform anchor, float scale, Color color)
+    /// <summary>
+    /// 검지 끝(anchor)에 붙는 충전 구체. Charge(0~1)/Visible을 매 프레임 갱신해 쓴다.
+    /// withLight=false면 점광원을 달지 않는다 — 분신처럼 여러 기가 동시에 뜨는 경우에 쓴다
+    /// (URP는 오브젝트당 추가 광원을 몇 개만 고르므로, 광원이 많으면 그 선택이 매 프레임
+    ///  뒤바뀌며 화면이 번쩍인다).
+    /// </summary>
+    public static ChargeOrb BuildChargeOrb(Transform anchor, float scale, Color color, bool withLight = true)
     {
         var go = new GameObject("BossChargeOrb");
         go.transform.SetParent(anchor, false);
         go.transform.localPosition = Vector3.zero;
         NeutralizeScale(go.transform); // 본 스케일을 상쇄 — 이펙트 크기를 월드 미터로 다룬다
         var orb = go.AddComponent<ChargeOrb>();
-        orb.Init(scale, color);
+        orb.Init(scale, color, withLight);
         return orb;
     }
 
@@ -36,10 +41,19 @@ public static class BossFx
         return beam;
     }
 
+    /// <summary>돌진 경로를 바닥에 그리는 예고선(가장자리 두 줄 = 위험 폭 + 중앙선).</summary>
+    public static RushPath BuildRushPath(float scale, Color color)
+    {
+        var go = new GameObject("BossRushPath");
+        var path = go.AddComponent<RushPath>();
+        path.Init(scale, color);
+        return path;
+    }
+
     /// <summary>텔레포트 번쩍임. Spawn(pos)로 발동하는 재사용형 핸들.</summary>
     public static Flash BuildFlash(float scale, Color color)
     {
-        Color hot = Color.Lerp(color, Color.white, 0.7f);
+        Color hot = Color.Lerp(color, Color.white, 0.25f); // 흰빛으로 날리지 않는다 — 보스 색을 유지
 
         // 섬광: 사라지고/나타나는 자리에서 하얗게 터지는 빛
         ParticleSystem core = NewSystem("BossTeleportFX", null, loop: false);
@@ -60,7 +74,7 @@ public static class BossFx
         bMain.startColor = hot;
         SetCone(bolts, 18f, 0.25f * scale);
         Stretch(bolts, 9f);
-        FadeOut(bolts, Color.white, color);
+        FadeOut(bolts, hot, color);
 
         // 확산 링: 바닥을 따라 퍼지는 파문
         ParticleSystem ring = NewSystem("EnergyRing", core.transform, loop: false);
@@ -109,7 +123,7 @@ public static class BossFx
             tr.emitting = false;
 
             var grad = new Gradient();
-            Color hot = Color.Lerp(color, Color.white, 0.6f);
+            Color hot = Color.Lerp(color, Color.white, 0.25f);
             grad.SetKeys(
                 new[] { new GradientColorKey(hot, 0f), new GradientColorKey(color, 1f) },
                 new[] { new GradientAlphaKey(0.9f, 0f), new GradientAlphaKey(0f, 1f) });
@@ -143,11 +157,12 @@ public static class BossFx
         /// <summary>표시 여부. 끄면 부드럽게 사라진다.</summary>
         public bool Visible { get; set; }
 
-        internal void Init(float scale, Color color)
+        internal void Init(float scale, Color color, bool withLight = true)
         {
             _scale = scale;
             _color = color;
-            Color hot = Color.Lerp(color, Color.white, 0.75f);
+            // 흰빛으로 과열시키지 않는다 — 보스 이펙트는 전부 보스 색(보라)으로 읽혀야 한다
+            Color hot = Color.Lerp(color, Color.white, 0.25f);
 
             // 코어: 항상 카메라를 향하는 사각형 + 원형 글로우 텍스처 = 구체처럼 보인다
             var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
@@ -161,11 +176,14 @@ public static class BossFx
             _coreRenderer.shadowCastingMode = ShadowCastingMode.Off;
             _coreRenderer.receiveShadows = false;
 
-            _light = gameObject.AddComponent<Light>();
-            _light.type = LightType.Point;
-            _light.color = color;
-            _light.range = 2.5f * scale;
-            _light.intensity = 0f;
+            if (withLight)
+            {
+                _light = gameObject.AddComponent<Light>();
+                _light.type = LightType.Point;
+                _light.color = color;
+                _light.range = 2.5f * scale;
+                _light.intensity = 0f;
+            }
 
             // 흡입 입자: 구(球) 껍질에서 음(-)의 속도로 출발 → 손끝으로 빨려든다
             _inflow = NewSystem("Inflow", transform, loop: true);
@@ -194,7 +212,7 @@ public static class BossFx
             bMain.startColor = hot;
             SetCone(_burst, 70f, 0.02f * scale);
             Stretch(_burst, 5f);
-            FadeOut(_burst, Color.white, color);
+            FadeOut(_burst, hot, color);
 
             SetShown(false);
         }
@@ -220,7 +238,7 @@ public static class BossFx
             _phase += freq * Time.deltaTime;
             float wobble = 0.7f + 0.3f * Mathf.Sin(_phase * Mathf.PI * 2f);
 
-            float size = _scale * Mathf.Lerp(0.07f, 0.26f, Charge) * wobble * _fade;
+            float size = _scale * Mathf.Lerp(0.1f, 0.42f, Charge) * wobble * _fade;
             size *= 1f + _burstBoost * 1.8f;
             _core.localScale = Vector3.one * size;
 
@@ -234,12 +252,17 @@ public static class BossFx
             }
 
             // 색: 충전이 진행될수록 코어가 흰빛으로 과열된다
-            Color c = Color.Lerp(_color, Color.white, 0.4f + 0.5f * Charge);
-            c.a = _fade;
+            // 충전이 올라도 흰빛으로 날아가지 않게 — 밝아지되 보라색을 유지한다.
+            // 알파를 1로 두면 흡입 입자와 겹치는 중심이 가산 누적으로 하얗게 뭉갠다.
+            Color c = Color.Lerp(_color, Color.white, 0.08f + 0.17f * Charge);
+            c.a = _fade * 0.7f;
             SetMatColor(_coreMat, c);
 
-            _light.range = _scale * Mathf.Lerp(1.6f, 4.5f, Charge);
-            _light.intensity = (Mathf.Lerp(0.6f, 4f, Charge) * wobble + _burstBoost * 8f) * _fade;
+            if (_light != null)
+            {
+                _light.range = _scale * Mathf.Lerp(2f, 6.5f, Charge);
+                _light.intensity = (Mathf.Lerp(0.8f, 6f, Charge) * wobble + _burstBoost * 10f) * _fade;
+            }
 
             var em = _inflow.emission;
             em.rateOverTime = Mathf.Lerp(8f, 70f, Charge) * _fade;
@@ -249,9 +272,13 @@ public static class BossFx
         {
             if (_coreRenderer.enabled == on) return;
             _coreRenderer.enabled = on;
-            _light.enabled = on;
+            if (_light != null) _light.enabled = on;
             if (on) _inflow.Play();
-            else { _inflow.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear); _light.intensity = 0f; }
+            else
+            {
+                _inflow.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+                if (_light != null) _light.intensity = 0f;
+            }
         }
     }
 
@@ -259,11 +286,18 @@ public static class BossFx
     public class Beam : MonoBehaviour
     {
         // 굵기(사람 1.8m 기준, 월드 미터). 굵을수록 위협적으로 보인다.
-        private const float CoreWidth = 0.45f;   // 흰 코어
-        private const float GlowWidth = 1.5f;    // 바깥 발광
-        private const float GuideWidth = 0.05f;  // 발사 전 예고선
+        private const float CoreWidth = 0.7f;    // 흰 코어
+        private const float GlowWidth = 2.4f;    // 바깥 발광
+        private const float HaloWidth = 4.6f;    // 가장 바깥 후광 — 멀리서도 광선의 존재가 보인다
+        private const float GuideWidth = 0.24f;  // 발사 전 예고선
+        private const float LockWidth = 0.5f;    // 조준 고정 경고선
 
-        private LineRenderer _core, _glow, _guide;
+        // 겹쳐 더해지는 세 층의 알파(합 ≈ 1.0). 이 합이 커지면 색이 잘려 흰색이 된다.
+        private const float CoreAlpha = 0.5f;
+        private const float GlowAlpha = 0.33f;
+        private const float HaloAlpha = 0.17f;
+
+        private LineRenderer _core, _glow, _halo, _guide, _lock;
         private float _life, _duration;
         private float _scale;
         private Color _color;
@@ -272,27 +306,54 @@ public static class BossFx
         {
             _scale = scale;
             _color = color;
-            Color hot = Color.Lerp(color, Color.white, 0.8f);
+            // 가산 블렌딩은 겹친 레이어가 그대로 더해진다 — 세 겹의 알파 합이 1을 넘으면
+            // 채널이 잘리며 흰색으로 뭉갠다. 합이 1 근처에 머물도록 각 층을 낮게 잡는다.
+            Color hot = Color.Lerp(color, Color.white, 0.2f);
 
-            _core = NewLine(transform, "Core", hot, CoreWidth * scale);
-            _glow = NewLine(transform, "Glow", new Color(color.r, color.g, color.b, 0.55f), GlowWidth * scale);
+            _halo = NewLine(transform, "Halo", new Color(color.r, color.g, color.b, HaloAlpha), HaloWidth * scale);
+            _glow = NewLine(transform, "Glow", new Color(color.r, color.g, color.b, GlowAlpha), GlowWidth * scale);
+            _core = NewLine(transform, "Core", new Color(hot.r, hot.g, hot.b, CoreAlpha), CoreWidth * scale);
             _guide = NewLine(transform, "Guide", new Color(color.r, color.g, color.b, 0.25f), GuideWidth * scale);
+            _lock = NewLine(transform, "LockWarning", Color.Lerp(color, Color.white, 0.35f), LockWidth * scale);
         }
 
-        /// <summary>충전 중 조준선(예고). alpha 0~1로 점점 진해진다.</summary>
-        public void Preview(Vector3 from, Vector3 to, float alpha)
+        /// <summary>
+        /// 충전 중 조준선(예고). alpha 0~1로 점점 진해지고, 충전이 오를수록 맥동이 빨라진다.
+        /// locked=true(조준 고정 구간)면 흰 경고선이 겹쳐 빠르게 깜빡인다 — "지금 구르면 피한다"는 신호.
+        /// </summary>
+        public void Preview(Vector3 from, Vector3 to, float alpha, bool locked = false)
         {
-            _guide.enabled = true;
-            _guide.positionCount = 2;
-            _guide.SetPosition(0, from);
-            _guide.SetPosition(1, to);
-            Color c = new Color(_color.r, _color.g, _color.b, Mathf.Clamp01(alpha));
+            alpha = Mathf.Clamp01(alpha);
+
+            // 맥동: 충전이 진행될수록 4Hz → 14Hz로 빨라진다(임박 신호).
+            // 바닥값을 높게 잡아 가장 옅은 순간에도 선이 사라져 보이지 않게 한다.
+            float pulse = 0.78f + 0.22f * Mathf.Sin(Time.time * Mathf.Lerp(4f, 14f, alpha) * Mathf.PI * 2f);
+
+            SetLine(_guide, from, to);
+            Color c = Color.Lerp(_color, Color.white, 0.08f + 0.15f * alpha);
+            c.a = alpha * pulse;
             _guide.startColor = c;
-            _guide.endColor = new Color(_color.r, _color.g, _color.b, Mathf.Clamp01(alpha) * 0.3f);
-            _guide.startWidth = _guide.endWidth = GuideWidth * _scale * (0.6f + alpha);
+            _guide.endColor = new Color(c.r, c.g, c.b, c.a * 0.6f); // 끝까지 진하게 이어진다
+            _guide.startWidth = _guide.endWidth = GuideWidth * _scale * (0.9f + alpha * (1f + 0.5f * pulse));
+
+            if (locked)
+            {
+                SetLine(_lock, from, to);
+                float blink = 0.65f + 0.35f * Mathf.Abs(Mathf.Sin(Time.time * 18f));
+                Color lc = Color.Lerp(_color, Color.white, 0.45f); // 보라를 유지한 밝은 경고색
+                lc.a = blink;
+                _lock.startColor = lc;
+                _lock.endColor = new Color(lc.r, lc.g, lc.b, blink * 0.7f);
+                _lock.startWidth = _lock.endWidth = LockWidth * _scale * (1f + blink);
+            }
+            else if (_lock != null) _lock.enabled = false;
         }
 
-        public void HidePreview() { if (_guide != null) _guide.enabled = false; }
+        public void HidePreview()
+        {
+            if (_guide != null) _guide.enabled = false;
+            if (_lock != null) _lock.enabled = false;
+        }
 
         /// <summary>발사: 굵은 광선이 터졌다가 duration 동안 가늘어지며 사라진다.</summary>
         public void Fire(Vector3 from, Vector3 to, float duration)
@@ -302,6 +363,7 @@ public static class BossFx
             _life = _duration;
             SetLine(_core, from, to);
             SetLine(_glow, from, to);
+            SetLine(_halo, from, to);
         }
 
         /// <summary>발사 중 시작점이 움직였을 때(손이 흔들릴 때) 광선을 따라 붙인다.</summary>
@@ -310,6 +372,7 @@ public static class BossFx
             if (_life <= 0f) return;
             _core.SetPosition(0, from);
             _glow.SetPosition(0, from);
+            _halo.SetPosition(0, from);
         }
 
         public void Hide()
@@ -317,6 +380,7 @@ public static class BossFx
             _life = 0f;
             if (_core != null) _core.enabled = false;
             if (_glow != null) _glow.enabled = false;
+            if (_halo != null) _halo.enabled = false;
             HidePreview();
         }
 
@@ -327,10 +391,18 @@ public static class BossFx
             float k = Mathf.Clamp01(_life / _duration);
             if (k <= 0f) { Hide(); return; }
 
-            // 발사 직후가 가장 굵고(1.35배 과열), 사그라들 때도 절반 이하로는 얇아지지 않는다
-            float w = Mathf.Lerp(0.5f, 1.35f, k);
+            // 발사 직후 2배 이상으로 터졌다가(과열) 굵기를 유지한 채 사그라든다.
+            // 미세한 떨림(flicker)을 섞어 '살아있는 에너지'로 보이게 한다.
+            float burst = 1f + 1.3f * k * k * k;
+            float flicker = 1f + 0.09f * Mathf.Sin(Time.time * 70f);
+            float w = Mathf.Lerp(0.5f, 1f, k) * burst * flicker;
+
             _core.startWidth = _core.endWidth = CoreWidth * _scale * w;
             _glow.startWidth = _glow.endWidth = GlowWidth * _scale * w;
+            _halo.startWidth = _halo.endWidth = HaloWidth * _scale * w;
+
+            // 후광은 먼저 옅어져 광선이 '식는' 느낌을 준다
+            _halo.startColor = _halo.endColor = new Color(_color.r, _color.g, _color.b, HaloAlpha * k);
         }
 
         private void SetLine(LineRenderer lr, Vector3 from, Vector3 to)
@@ -340,21 +412,70 @@ public static class BossFx
             lr.SetPosition(0, from);
             lr.SetPosition(1, to);
         }
+    }
 
-        private static LineRenderer NewLine(Transform parent, string name, Color color, float width)
+    /// <summary>
+    /// 돌진 경로 예고선. 바닥에 "이 폭 안에 있으면 받힌다"는 통로를 그린다 —
+    /// 가장자리 두 줄이 위험 폭을, 중앙선이 돌진 방향을 알린다.
+    /// 예비동작 동안 alpha를 올려 진해지게 하고, 돌진이 시작되면 Hide한다.
+    /// </summary>
+    public class RushPath : MonoBehaviour
+    {
+        private LineRenderer _left, _right, _center;
+        private float _scale;
+        private Color _color;
+
+        public GameObject Root => gameObject;
+
+        internal void Init(float scale, Color color)
         {
-            var go = new GameObject(name);
-            go.transform.SetParent(parent, false);
-            var lr = go.AddComponent<LineRenderer>();
-            lr.sharedMaterial = GunFx.MakeTracerMaterial();
-            lr.startColor = lr.endColor = color;
-            lr.startWidth = lr.endWidth = width;
+            _scale = scale;
+            _color = color;
+            _left = NewLine(transform, "EdgeL", color, 0.18f * scale);
+            _right = NewLine(transform, "EdgeR", color, 0.18f * scale);
+            _center = NewLine(transform, "Center", Color.Lerp(color, Color.white, 0.25f), 0.1f * scale);
+            _left.useWorldSpace = _right.useWorldSpace = _center.useWorldSpace = true;
+        }
+
+        /// <summary>from→to 경로를 반폭 halfWidth로 그린다. alpha 0~1.</summary>
+        public void Show(Vector3 from, Vector3 to, float halfWidth, float alpha)
+        {
+            alpha = Mathf.Clamp01(alpha);
+            Vector3 dir = to - from;
+            dir.y = 0f;
+            if (dir.sqrMagnitude < 1e-8f) { Hide(); return; }
+            Vector3 side = Vector3.Cross(Vector3.up, dir.normalized) * halfWidth;
+
+            // 맥동: 돌진이 임박할수록 빨라진다(바닥값을 높여 늘 또렷하게 보이도록)
+            float pulse = 0.78f + 0.22f * Mathf.Sin(Time.time * Mathf.Lerp(5f, 16f, alpha) * Mathf.PI * 2f);
+
+            Color edge = Color.Lerp(_color, Color.white, 0.08f + 0.12f * alpha);
+            edge.a = alpha * pulse;
+            float edgeWidth = 0.18f * _scale * (0.9f + alpha * 1.6f);
+            SetPath(_left, from + side, to + side, edge, edgeWidth);
+            SetPath(_right, from - side, to - side, edge, edgeWidth);
+
+            Color mid = Color.Lerp(_color, Color.white, 0.3f);
+            mid.a = alpha * pulse * 0.9f;
+            SetPath(_center, from, to, mid, 0.1f * _scale * (0.9f + alpha * 2f));
+        }
+
+        public void Hide()
+        {
+            if (_left != null) _left.enabled = false;
+            if (_right != null) _right.enabled = false;
+            if (_center != null) _center.enabled = false;
+        }
+
+        private static void SetPath(LineRenderer lr, Vector3 from, Vector3 to, Color c, float width)
+        {
+            lr.enabled = true;
             lr.positionCount = 2;
-            lr.numCapVertices = 3;
-            lr.shadowCastingMode = ShadowCastingMode.Off;
-            lr.receiveShadows = false;
-            lr.enabled = false;
-            return lr;
+            lr.SetPosition(0, from);
+            lr.SetPosition(1, to);
+            lr.startColor = c;
+            lr.endColor = new Color(c.r, c.g, c.b, c.a * 0.8f); // 통로 끝까지 진하게
+            lr.startWidth = lr.endWidth = width;
         }
     }
 
@@ -413,6 +534,23 @@ public static class BossFx
             Mathf.Abs(s.x) < 1e-8f ? 1f : 1f / s.x,
             Mathf.Abs(s.y) < 1e-8f ? 1f : 1f / s.y,
             Mathf.Abs(s.z) < 1e-8f ? 1f : 1f / s.z);
+    }
+
+    /// <summary>2점 라인 렌더러 골격(광선/예고선 공용).</summary>
+    private static LineRenderer NewLine(Transform parent, string name, Color color, float width)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        var lr = go.AddComponent<LineRenderer>();
+        lr.sharedMaterial = GunFx.MakeTracerMaterial();
+        lr.startColor = lr.endColor = color;
+        lr.startWidth = lr.endWidth = width;
+        lr.positionCount = 2;
+        lr.numCapVertices = 3;
+        lr.shadowCastingMode = ShadowCastingMode.Off;
+        lr.receiveShadows = false;
+        lr.enabled = false;
+        return lr;
     }
 
     private static Material NewGlowMaterial(Color c)

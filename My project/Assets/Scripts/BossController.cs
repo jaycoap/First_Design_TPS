@@ -10,6 +10,9 @@ using UnityEngine;
 ///  - 근접 할퀴기: 사정거리 안이면 양팔을 번갈아 크게 휘둘러 연속으로 할퀸다(마지막 타는 더 크고 아프다)
 ///  - 레이저    : 왼팔을 앞으로 뻗고 검지 끝에서 빛이 일렁이다가, 발사 직전 일렁임이 빨라지고 발사
 ///                (발사 직전 조준이 고정되므로 구르기로 옆으로 빠지면 피할 수 있다)
+///  - 돌진 할퀴기: 중거리에서 몸을 낮추고 양팔을 뒤로 당겼다가, 바닥에 그려진 통로를 따라
+///                직선으로 달려들며 양팔을 X자로 교차해 후려친다. 방향이 예비동작 끝에
+///                고정되므로 통로 밖으로 구르면 피할 수 있고, 빗나가면 크게 미끄러지며 굳는다(반격 기회)
 ///  - 텔레포트  : 플레이어가 멀어지면 쿨다운 없이 번쩍이며 사라졌다가 등 뒤(또는 정면)에 나타난다
 ///  - 분신 처형  : 체력 30%에서 1회. 맵 밖 원주에 진짜 포함 10기가 늘어서 일제히 충전하고,
 ///                진짜만 충전 색이 다르다. 제한 시간 안에 '과거의 나와의 협공(G)'으로 진짜를
@@ -23,7 +26,7 @@ using UnityEngine;
 [DefaultExecutionOrder(60)] // BossRig(50)가 팔 포즈를 적용한 뒤 LateUpdate에서 손끝 위치를 읽는다
 public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 {
-    public enum Phase { Idle, Chase, Melee, Laser, Teleport, Judgment, Dead }
+    public enum Phase { Intro, Idle, Chase, Melee, Rush, Laser, Teleport, Judgment, Aerial, Dead }
 
     [Header("참조")]
     [Tooltip("비우면 씬의 PlayerStats를 자동으로 찾는다.")]
@@ -39,9 +42,27 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     [SerializeField] private float turnSpeed = 9f;
     [SerializeField] private float gravity = -20f;
 
+    [Header("등장 컷신")]
+    [Tooltip("게임을 시작하면 보스가 은신한 채로 기다렸다가, 컷신과 함께 모습을 드러낸다.\n" +
+             "끄면 예전처럼 시작하자마자 바로 전투가 시작된다.")]
+    [SerializeField] private bool playIntro = true;
+    [Tooltip("시작 후 컷신이 걸리기까지의 여유(초). 플레이어가 화면을 인지할 시간.")]
+    [SerializeField] private float introDelay = 0.8f;
+    [Tooltip("아무것도 없는 자리를 비추며 뜸을 들이는 시간(초). 길수록 등장이 극적이다.")]
+    [SerializeField] private float introHoldTime = 1.6f;
+    [Tooltip("모습을 드러낸 뒤 포효하며 버티는 시간(초)")]
+    [SerializeField] private float introRevealTime = 2.2f;
+
+    [Header("체력 단계 (패턴 해금)")]
+    [Tooltip("체력이 이 비율 아래로 떨어지면 2단계 — 돌진과 '하늘 레이저 강우'가 열린다.")]
+    [SerializeField, Range(0.1f, 1f)] private float stage2HealthRatio = 0.7f;
+    [Tooltip("체력이 이 비율 아래로 떨어지면 3단계 — 돌진이 3연타로 이어지고,\n" +
+             "레이저는 구체 3연발로, 하늘에서 떨어지는 것도 구체로 바뀐다.")]
+    [SerializeField, Range(0.05f, 1f)] private float stage3HealthRatio = 0.5f;
+
     [Header("근접 할퀴기")]
     [Tooltip("이 거리 안이면 할퀴기를 시도한다.")]
-    [SerializeField] private float meleeRange = 2.6f;
+    [SerializeField] private float meleeRange = 1.7f;
     [Tooltip("정면 기준 판정 각도(도)")]
     [SerializeField] private float meleeAngle = 120f;
     [SerializeField] private float meleeDamage = 18f;
@@ -53,14 +74,37 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     [SerializeField] private float meleeRecover = 0.45f;
     [Tooltip("강타 순간 앞으로 밀고 나가는 속도")]
     [SerializeField] private float meleeLunge = 3f;
-    [Tooltip("연속 할퀴기 횟수. 오른팔 → 왼팔 → 오른팔 순으로 번갈아 휘두른다.")]
+    [Tooltip("2단계부터의 연속 할퀴기 횟수. 오른팔 → 왼팔 → 오른팔 순으로 번갈아 휘두른다.\n" +
+             "1단계(체력 70% 이상)에서는 아래 Melee Hits Stage1 값을 쓴다.")]
     [SerializeField] private int meleeComboHits = 3;
+    [Tooltip("1단계(체력 70% 이상)의 할퀴기 타수. 기본 1회 — 초반에는 한 대만 후려친다.")]
+    [SerializeField] private int meleeHitsStage1 = 1;
     [Tooltip("연타 사이의 짧은 예비동작(초). 첫 타만 Melee Windup을 그대로 쓴다.")]
     [SerializeField] private float meleeComboInterval = 0.16f;
     [Tooltip("연타 1대당 피해 배율. 여러 번 맞으므로 한 대의 무게는 낮춘다(Melee Damage × 이 값).")]
     [SerializeField, Range(0.1f, 1f)] private float meleeComboDamageScale = 0.55f;
     [Tooltip("마지막 마무리 일격의 피해/사거리/전진 배율")]
     [SerializeField] private float meleeFinisherScale = 1.6f;
+
+    [Header("돌진 할퀴기 (중거리)")]
+    [Tooltip("이 거리보다 멀어야 돌진한다. 너무 가까우면 그냥 할퀴는 편이 자연스럽다.")]
+    [SerializeField] private float rushMinRange = 3.2f;
+    [Tooltip("이 거리 안이면 돌진한다. 이보다 멀면 레이저/텔레포트가 담당한다.")]
+    [SerializeField] private float rushMaxRange = 9f;
+    [SerializeField] private float rushDamage = 24f;
+    [SerializeField] private float rushCooldown = 7f;
+    [Tooltip("몸을 낮추고 양팔을 뒤로 당기는 예비동작 시간(초). 이 동안 바닥에 돌진 통로가 그려진다.")]
+    [SerializeField] private float rushWindup = 0.7f;
+    [Tooltip("돌진 속도(사람 1.8m 기준 m/s). 걷기보다 훨씬 빨라야 '달려든다'로 읽힌다.")]
+    [SerializeField] private float rushSpeed = 12f;
+    [Tooltip("돌진 최대 지속 시간(초). 빗나가면 이 시간만큼 지나쳐 달린다.")]
+    [SerializeField] private float rushTime = 0.6f;
+    [Tooltip("돌진 중 받히는 판정 반경(사람 1.8m 기준). 이 폭이 바닥 통로로 그려진다.")]
+    [SerializeField] private float rushRadius = 1.2f;
+    [Tooltip("예비동작 끝에서 조준하는 지점을 목표 너머로 이만큼 더 잡는다(지나쳐 달리는 거리).")]
+    [SerializeField] private float rushOvershoot = 2.5f;
+    [Tooltip("돌진이 끝난 뒤 미끄러지며 굳어 있는 시간(초). 빗나가면 그대로 반격 기회가 된다.")]
+    [SerializeField] private float rushRecover = 0.75f;
 
     [Header("레이저 (손끝 발사)")]
     [SerializeField] private float laserRange = 30f;
@@ -75,7 +119,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     [Tooltip("발사 직전 조준이 고정되는 시간(초). 이 시간 안에 구르면 피할 수 있다.")]
     [SerializeField] private float laserLockTime = 0.4f;
     [Tooltip("광선이 남아있는 시간(초)")]
-    [SerializeField] private float laserBeamTime = 0.3f;
+    [SerializeField] private float laserBeamTime = 0.42f;
     [Tooltip("광선 판정 반경 — 이 반경 밖으로 벗어나면 맞지 않는다.")]
     [SerializeField] private float laserRadius = 0.35f;
     [SerializeField] private float laserRecover = 0.5f;
@@ -115,6 +159,50 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     [SerializeField] private float meteorInterval = 0.18f;
     [Tooltip("운석 폭풍 재사용 대기(초). 텔레포트는 쿨다운이 없어 이 값이 없으면 계속 쏟아진다.")]
     [SerializeField] private float meteorCooldown = 4f;
+
+    [Header("하늘 레이저 강우 (2단계~)")]
+    [Tooltip("하늘로 레이저를 쏜 뒤 그것이 플레이어 주변으로 떨어지는 패턴의 재사용 대기(초).")]
+    [SerializeField] private float skyRainCooldown = 11f;
+    [Tooltip("이 패턴으로 떨어지는 수. 텔레포트 충격파보다 넉넉하게 뿌린다.")]
+    [SerializeField] private int skyRainCount = 7;
+    [Tooltip("팔을 하늘로 들어 올리는 사전 동작 시간(초)")]
+    [SerializeField] private float skyRainAimTime = 0.7f;
+    [Tooltip("하늘로 쏘기 전 충전 시간(초)")]
+    [SerializeField] private float skyRainChargeTime = 0.9f;
+    [Tooltip("이 거리 안이면 강우를 쓰지 않는다(코앞에서 쓰면 피할 틈이 없다).")]
+    [SerializeField] private float skyRainMinRange = 3f;
+
+    [Header("공중 처형 (분신 처형 이후)")]
+    [Tooltip("분신 처형이 끝난 뒤 이만큼 지나야 처음 발동한다(초).\n" +
+             "파훼 보상인 경직 반격을 챙길 틈을 주기 위한 여유다.")]
+    [SerializeField] private float aerialFirstDelay = 6f;
+    [Tooltip("공중 처형 재사용 대기(초)")]
+    [SerializeField] private float aerialCooldown = 18f;
+    [Tooltip("아레나 중앙 바닥에서 이만큼 떠오른다 — 사람 기준 환산이 아니라 **실제 월드 미터**다.\n" +
+             "다른 수치처럼 캐릭터 키에 비례시키면(7 × k ≈ 1.25m) 보스 키의 4배까지 올라가\n" +
+             "화면 밖으로 사라진다. 보스가 보이는 높이는 제 키의 두 배 남짓이라 직접 지정한다.")]
+    [SerializeField] private float aerialHeight = 0.6f;
+    [Tooltip("떠오른 뒤 겨누는 시간(초). 이 동안 플레이어는 엄폐/거리를 잡을 수 있다.")]
+    [SerializeField] private float aerialAimTime = 1.1f;
+    [Tooltip("연속으로 쏟아붓는 구체 수")]
+    [SerializeField] private int aerialBarrageCount = 10;
+    [Tooltip("구체 사이의 발사 간격(초)")]
+    [SerializeField] private float aerialBarrageInterval = 0.26f;
+    [Tooltip("다 쏘고 나서 공중에 굳어 있는 시간(초) — 지상 복귀 전 반격 기회")]
+    [SerializeField] private float aerialRecover = 1.2f;
+
+    [Header("레이저 구체 (3단계 — 레이저 대체)")]
+    [Tooltip("한 번에 쏘는 구체 수")]
+    [SerializeField] private int orbBurstCount = 3;
+    [Tooltip("구체 사이의 발사 간격(초)")]
+    [SerializeField] private float orbInterval = 0.35f;
+    [SerializeField] private float orbDamage = 20f;
+    [Tooltip("구체 비행 속도(사람 1.8m 기준 m/s). 느릴수록 피하기 쉽다.")]
+    [SerializeField] private float orbSpeed = 9f;
+    [Tooltip("구체 폭발 반경(사람 1.8m 기준)")]
+    [SerializeField] private float orbRadius = 1.3f;
+    [Tooltip("구체가 스스로 터지기까지의 비행 시간(초)")]
+    [SerializeField] private float orbLife = 4f;
 
     [Header("분신 처형 (체력 30% 패턴)")]
     [Tooltip("체력이 최대치의 이 비율 이하로 떨어지면 1회 발동한다.")]
@@ -161,7 +249,8 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     private float _k = 1f;              // 사람 1.8m 대비 실제 크기 배율
     private float _verticalVelocity;
     private float _farTimer;
-    private float _nextMelee, _nextLaser;
+    private float _nextMelee, _nextLaser, _nextRush, _nextSkyRain;
+    private float _nextAerial = float.MaxValue; // 분신 처형이 끝나야 열린다
     private float _teleportRetryTime;   // 설 자리를 못 찾았을 때의 재시도 대기
     private float _nextMeteorTime;      // 운석 폭풍 재사용 시각
     private float _teleportDist;        // 실제 발동 거리(월드 m) — 아레나 크기까지 반영한 값
@@ -172,10 +261,11 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     private const float WalkAnimSpeed = 0.5f;
 
     /// <summary>광선이 화면에 남는 시간 = laserBeamTime × 이 값(판정은 발사 순간 한 번뿐).</summary>
-    private const float BeamVisualStretch = 1.8f;
+    private const float BeamVisualStretch = 2.6f;
 
     // 레이저 연출 상태(코루틴이 채우고 LateUpdate가 그린다)
     private bool _orbOn, _beamFiring;
+    private bool _aimLocked;            // 조준 고정 구간(예고선이 흰빛으로 깜빡인다)
     private float _orbCharge, _previewAlpha;
     private Vector3 _aimDir;
 
@@ -191,7 +281,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     private BossFx.Beam _beam;
     private BossFx.Flash _flash;
     private BossFx.ClawTrail _claw, _clawLeft;
+    private BossFx.RushPath _rushPath;   // 돌진 예비동작 중 바닥에 그려지는 통로
     private GunFx.ImpactFx _impact;
+    private GunFx.ImpactFx _beamImpact;  // 레이저 착탄 전용(굵은 광선에 맞춘 큰 폭발)
+    private GunFx.MuzzleFx _muzzleFx;    // 발사 순간 손끝에서 터지는 방출광
     private BossFx.ChargeOrb _realOrb;   // 분신 처형 전용(진짜만 다른 색)
     private BossFx.Beam _realBeam;
 
@@ -205,7 +298,6 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     // 부위 히트박스(없으면 몸 전체가 같은 피해를 받는 예전 동작 그대로)
     private BossHitbox[] _hitboxes = new BossHitbox[0];
     private CharacterController _playerCc;   // 히트박스를 물리 충돌에서 뺄 때만 쓴다
-    private bool _playerCcResolved;
 
     private readonly RaycastHit[] _hitBuf = new RaycastHit[12];
     private readonly Collider[] _colBuf = new Collider[12];
@@ -216,10 +308,28 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     /// <summary>씬에 살아있는 보스(HUD가 체력 바를 그리는 데 사용). 없으면 null.</summary>
     public static BossController Active { get; private set; }
 
+    /// <summary>
+    /// 컷신이 진행 중인가(전역). 플레이어 조작·사격·시간 능력이 이 동안 잠긴다.
+    /// 카메라가 보스를 비추고 있으므로 조작을 열어 두면 화면 밖에서 움직이게 된다.
+    /// </summary>
+    public static bool CutsceneActive { get; private set; }
+
+    /// <summary>등장 컷신이 끝나기 전인가(HUD 보스 바 / 전투 음악이 이때는 뜨지 않는다).</summary>
+    public bool IntroPlaying => _phase == Phase.Intro;
+
     public float Health => _health;
     public float MaxHealth => maxHealth;
     public bool IsDead => _phase == Phase.Dead;
     public Phase CurrentPhase => _phase;
+
+    /// <summary>
+    /// 체력 단계. 낮아질수록 쓰는 패턴이 늘고 기존 패턴도 흉포해진다.
+    ///  1단계(70%~)   : 할퀴기 1회 · 플레이어 조준 레이저 · 접근만 하는 텔레포트
+    ///  2단계(~70%)   : + 돌진 할퀴기 · 하늘 레이저 강우 · 텔레포트 충격파(레이저 낙하)
+    ///  3단계(~50%)   : 돌진이 3연타로 이어지고, 레이저는 구체 3연발, 낙하물도 구체로 바뀐다
+    /// </summary>
+    public int Stage => _health <= maxHealth * stage3HealthRatio ? 3
+                      : _health <= maxHealth * stage2HealthRatio ? 2 : 1;
 
     /// <summary>분신 처형 패턴 진행 중인가(HUD 경고 표시용).</summary>
     public bool JudgmentActive => _judgmentActive;
@@ -270,7 +380,21 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _hitboxes = GetComponentsInChildren<BossHitbox>(true);
         IgnoreHitboxCollisions();
 
+        BattleMusic.Ensure(); // 보스가 있는 씬 = 전투 — 배경음악 재생기를 보장한다
         BuildFx();
+
+        // 컷신을 쓸 거라면 이 시점부터 숨어 있어야 한다 — 한 프레임이라도 보이면
+        // "없다가 나타난다"는 연출이 성립하지 않는다.
+        if (playIntro)
+        {
+            _phase = Phase.Intro;
+            SetHidden(true);
+        }
+    }
+
+    private void Start()
+    {
+        if (playIntro) StartCoroutine(IntroRoutine());
     }
 
     /// <summary>
@@ -282,16 +406,41 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     /// IgnoreCollision은 콜라이더를 껐다 켜면 풀리므로, 은신이 끝날 때마다 다시 건다.
     /// (BossHitboxSetup이 만드는 전용 레이어의 충돌 매트릭스가 1차 방어선이고, 이건 이중 안전장치)
     /// </summary>
+    /// <summary>
+    /// CharacterController를 끄고 순간이동시킨 뒤 다시 켠다.
+    /// 콜라이더를 껐다 켜면 <see cref="Physics.IgnoreCollision"/> 설정이 전부 풀리므로,
+    /// 켠 직후 반드시 다시 걸어야 한다 — 안 그러면 텔레포트 한 번에
+    /// 플레이어와 서로 밀어내는 상태로 돌아가 공중에 뜨는 문제가 되살아난다.
+    /// </summary>
+    private void WarpTo(Vector3 position, Quaternion? rotation = null)
+    {
+        _cc.enabled = false;
+        if (rotation.HasValue) transform.SetPositionAndRotation(position, rotation.Value);
+        else transform.position = position;
+        _cc.enabled = true;
+
+        _verticalVelocity = 0f;
+        IgnoreHitboxCollisions();
+    }
+
     private void IgnoreHitboxCollisions()
     {
-        if (_hitboxes.Length == 0) return;
-
-        if (!_playerCcResolved)
+        // 플레이어를 아직 못 찾았으면 다음 호출에서 다시 시도한다
+        // (찾지 못한 채 resolved로 표시하면 영영 다시 찾지 않는다)
+        if (_playerCc == null)
         {
-            _playerCcResolved = true;
             var player = FindFirstObjectByType<PlayerController>();
             if (player != null) _playerCc = player.GetComponent<CharacterController>();
         }
+
+        // 보스 본체 캡슐 ↔ 플레이어 캡슐: 서로 밀지 않게 한다.
+        // CharacterController끼리 부딪히면 한쪽이 상대 캡슐 위로 타고 올라가(스텝 오프셋)
+        // 공중에 뜬 채 서 있게 된다. 공격 판정은 전부 거리 계산이라 이걸 꺼도 그대로 동작하고,
+        // 텔레포트 자리 검사도 원래 플레이어와는 겹쳐도 되는 것으로 처리하고 있다.
+        if (_cc != null && _playerCc != null)
+            Physics.IgnoreCollision(_cc, _playerCc, true);
+
+        if (_hitboxes.Length == 0) return;
 
         foreach (var hb in _hitboxes)
         {
@@ -312,13 +461,33 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         // 시간역행이 이 컴포넌트를 잠시 끄면 진행 중이던 공격도 함께 정리한다
         StopAllCoroutines();
         ResetAttackState();
+        AbortCutscene(); // 컷신 도중에 꺼졌다면 조작 잠금을 반드시 풀어 준다
         if (Active == this && !isActiveAndEnabled) Active = null;
+    }
+
+    /// <summary>
+    /// 컷신을 중간에 끊고 정상 상태로 되돌린다.
+    /// CutsceneActive는 전역 잠금이라, 코루틴이 죽은 채 true로 남으면
+    /// 플레이어가 영영 조작할 수 없게 된다 — 어떤 경로로 끝나든 여기를 거치게 한다.
+    /// </summary>
+    private void AbortCutscene()
+    {
+        if (!CutsceneActive) return;
+
+        CutsceneActive = false;
+        _cam?.SetCinematicFocus(null);
+        SetHidden(false);
+        if (_phase == Phase.Intro) _phase = Phase.Idle;
     }
 
     private void OnDestroy()
     {
         if (_impact != null && _impact.Root != null) Destroy(_impact.Root);
+        if (_beamImpact != null && _beamImpact.Root != null) Destroy(_beamImpact.Root);
+        if (_muzzleFx != null && _muzzleFx.Root != null) Destroy(_muzzleFx.Root);
+        if (_rushPath != null && _rushPath.Root != null) Destroy(_rushPath.Root);
         if (_flash != null && _flash.Root != null) Destroy(_flash.Root);
+        AbortCutscene(); // 보스가 사라져도 조작 잠금은 남지 않게
         if (Active == this) Active = null;
     }
 
@@ -330,6 +499,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _beam = BossFx.BuildBeam(transform, _k, bossColor);
         _flash = BossFx.BuildFlash(_k, bossColor);
         _impact = GunFx.BuildImpact(_k, bossColor);
+        _beamImpact = GunFx.BuildImpact(_k * 3f, bossColor);
+        _muzzleFx = GunFx.BuildMuzzleFlash(null, _k * 2.5f, bossColor);
+        _rushPath = BossFx.BuildRushPath(_k, bossColor);
         if (_rig != null)
         {
             // 연타는 양팔을 번갈아 쓰므로 궤적도 양쪽에 붙인다
@@ -345,6 +517,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         UpdateHitFlash();
 
         if (_phase == Phase.Dead) { ApplyGravity(Vector3.zero); return; }
+
+        // 등장 컷신 동안에는 AI가 돌지 않는다(코루틴이 몸을 제어한다)
+        if (_phase == Phase.Intro) return;
 
         if (_targetT == null && !AcquireTarget()) { ApplyGravity(Vector3.zero); SetAnimSpeed(0f); return; }
 
@@ -364,6 +539,15 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
         // 공격/텔레포트 중엔 코루틴이 몸을 제어한다(제자리 유지 + 중력만)
         if (_busy) return;
+
+        // --- 공중 처형: 분신 처형을 넘긴 뒤에만 열린다. 거리와 무관하게 최우선 ---
+        // 체력 조건을 함께 보는 이유: 시간역행으로 체력이 되돌아가면 분신 처형은 이미
+        // 끝난 것으로 남는데, 그 상태에서 체력이 넉넉한데도 마지막 패턴이 나오면 어색하다.
+        if (Time.time >= _nextAerial && _health <= maxHealth * judgmentHealthRatio)
+        {
+            StartCoroutine(AerialBarrageRoutine());
+            return;
+        }
 
         // --- 텔레포트: 너무 멀어지면 쿨다운 없이 무조건 따라붙는다 ---
         if (dist > _teleportDist)
@@ -393,11 +577,26 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
             return;
         }
 
-        // --- 원거리 레이저 ---
+        // --- 하늘 레이저 강우(2단계~): 붙어 있지 않을 때 넓게 압박한다 ---
+        if (Stage >= 2 && dist >= skyRainMinRange * _k && Time.time >= _nextSkyRain)
+        {
+            StartCoroutine(SkyRainRoutine());
+            return;
+        }
+
+        // --- 중거리 돌진 할퀴기(2단계~): 걸어서 붙기엔 멀고 텔레포트를 쓰기엔 가까운 거리대를 메운다 ---
+        if (Stage >= 2 && dist >= rushMinRange * _k && dist <= rushMaxRange * _k
+            && Time.time >= _nextRush && HasLineOfSight())
+        {
+            StartCoroutine(RushRoutine());
+            return;
+        }
+
+        // --- 원거리: 1·2단계는 조준 레이저, 3단계는 구체 3연발로 바뀐다 ---
         if (dist <= laserRange * _k && dist >= laserMinRange * _k
             && Time.time >= _nextLaser && HasLineOfSight())
         {
-            StartCoroutine(LaserRoutine());
+            StartCoroutine(Stage >= 3 ? OrbBurstRoutine() : LaserRoutine());
             return;
         }
 
@@ -425,7 +624,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         if (_previewAlpha > 0.001f)
         {
             Vector3 from = MuzzlePoint();
-            beam.Preview(from, from + _aimDir * BeamLength(from, _aimDir), _previewAlpha);
+            beam.Preview(from, from + _aimDir * BeamLength(from, _aimDir), _previewAlpha, _aimLocked);
         }
         else if (!_beamFiring) beam.HidePreview();
 
@@ -434,13 +633,19 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
     // ---------- 근접 할퀴기 ----------
 
-    private IEnumerator MeleeRoutine()
+    private IEnumerator MeleeRoutine() => MeleeRoutine(MeleeHitsForStage());
+
+    /// <summary>1단계는 한 대만, 2단계부터 연타로 늘어난다.</summary>
+    private int MeleeHitsForStage() => Stage >= 2 ? Mathf.Max(1, meleeComboHits)
+                                                  : Mathf.Max(1, meleeHitsStage1);
+
+    private IEnumerator MeleeRoutine(int hitCount)
     {
         _busy = true;
         _phase = Phase.Melee;
         SetAnimSpeed(0f);
 
-        int hits = Mathf.Max(1, meleeComboHits);
+        int hits = Mathf.Max(1, hitCount);
         bool prevValid = false;
         Vector3 prevDir = transform.forward;
         BossRig.Arm prevArm = BossRig.Arm.Right;
@@ -550,13 +755,554 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         to.y = 0f;
         float dist = to.magnitude;
 
-        if (dist > meleeRange * _k * 1.25f * rangeScale) return false;
+        // 판정 여유는 10%까지만 — 예전 25%는 눈에 보이는 팔 길이보다 한참 멀리서도 맞았다
+        if (dist > meleeRange * _k * 1.1f * rangeScale) return false;
         if (heightGap > _cc.height * Mathf.Abs(transform.lossyScale.y)) return false;
         if (Vector3.Angle(transform.forward, to) > meleeAngle * 0.5f) return false;
 
         Vector3 point = _targetT.position + Vector3.up * (0.9f * _k);
         DamagePlayer(damage, point, strong: rangeScale > 1f);
         return true;
+    }
+
+    // ---------- 돌진 할퀴기 ----------
+
+    /// <summary>
+    /// 중거리 돌진. 몸을 낮추고 양팔을 뒤로 당기는 예비동작 동안 바닥에 돌진 통로가 그려지고,
+    /// 예비동작 후반에 방향이 고정된 뒤 직선으로 달려들며 양팔을 X자로 교차해 후려친다.
+    ///  - 방향이 고정되므로 통로 밖으로 구르면 피할 수 있다.
+    ///  - 빗나가면 지나친 자리에서 더 크게 미끄러지며 굳는다(반격 기회).
+    /// </summary>
+    private IEnumerator RushRoutine()
+    {
+        _busy = true;
+        _phase = Phase.Rush;
+        SetAnimSpeed(0f);
+
+        float half = rushRadius * _k;
+
+        // --- 1) 예비동작: 활시위를 당기듯 양팔을 뒤·아래로 당긴다 ---
+        for (float t = 0f; t < rushWindup; t += Time.deltaTime)
+        {
+            float ease = Mathf.Clamp01(t / rushWindup);
+            ease *= ease;
+
+            _rig.AimArm(BossRig.Arm.Right, SwingDir(150f, -0.15f), ease);
+            _rig.AimArm(BossRig.Arm.Left, SwingDir(-150f, -0.15f), ease);
+            _rig.CurlHand(BossRig.Arm.Right, 1f, ease);
+            _rig.CurlHand(BossRig.Arm.Left, 1f, ease);
+
+            // 예비동작 후반 40%부터 조준이 굳는다 — 이 시점에 옆으로 굴러야 피한다
+            float lockStart = rushWindup * 0.6f;
+            float track = rushWindup > lockStart
+                ? 1f - Mathf.Clamp01((t - lockStart) / (rushWindup - lockStart)) : 0f;
+            TrackTarget(turnSpeed * 1.5f * track);
+
+            ShowRushPath(Mathf.Lerp(0.4f, 1f, ease), half);
+            HoldStill();
+            yield return null;
+        }
+
+        // --- 2) 돌진: 여기서 방향/거리가 고정된다 ---
+        float dashLength = RushLength();
+        _rushPath?.Hide();
+
+        Vector3 dir = transform.forward;
+        dir.y = 0f;
+        if (dir.sqrMagnitude < 1e-6f) dir = Vector3.forward;
+        dir.Normalize();
+        float speed = rushSpeed * _k;
+
+        _claw?.SetEmitting(true);
+        _clawLeft?.SetEmitting(true);
+        _impact?.Spawn(transform.position + Vector3.up * (0.1f * _k), Vector3.up); // 박차고 나가는 흙먼지
+        GameSfx.PlayAt(Sfx.BossRush, BodyCenter());
+        if (_cam != null) { _cam.AddShake(0.35f, 0.25f); _cam.AddFovKick(3.5f); }
+
+        bool hit = false;
+        float traveled = 0f;
+        for (float t = 0f; t < rushTime && traveled < dashLength; t += Time.deltaTime)
+        {
+            // 벌렸던 팔이 점점 모인다 = X자 교차 직전
+            float spread = Mathf.Lerp(55f, 14f, Mathf.Clamp01(t / rushTime));
+            _rig.AimArm(BossRig.Arm.Right, SwingDir(spread, 0.1f), 1f);
+            _rig.AimArm(BossRig.Arm.Left, SwingDir(-spread, 0.1f), 1f);
+            _rig.CurlHand(BossRig.Arm.Right, 0.8f, 1f);
+            _rig.CurlHand(BossRig.Arm.Left, 0.8f, 1f);
+
+            Vector3 before = transform.position;
+            SetAnimSpeed(0f);
+            ApplyGravity(dir * speed);
+
+            Vector3 moved = transform.position - before;
+            moved.y = 0f;
+            traveled += moved.magnitude;
+
+            // 판정을 먼저 본다 — 플레이어 캡슐에 막혀 멈춘 경우에도 확실히 후려치도록
+            if (!hit && TryRushHit()) { hit = true; break; }
+
+            // 벽/장애물에 막혔으면 더 밀지 않고 마무리로 넘어간다
+            if (t > 0.05f && moved.magnitude < speed * Time.deltaTime * 0.25f) break;
+
+            yield return null;
+        }
+
+        // --- 3) 마무리: 미끄러지며 양팔을 X자로 교차해 후려친다 ---
+        // 발톱이 지나가는 소리라 여기는 할퀴기 쪽(BossSwing)을 그대로 쓴다
+        const float CrossTime = 0.18f;
+        GameSfx.PlayAt(Sfx.BossSwing, BodyCenter(), pitch: 0.9f);
+        for (float t = 0f; t < CrossTime; t += Time.deltaTime)
+        {
+            float k = Mathf.Clamp01(t / CrossTime);
+            float ease = 1f - (1f - k) * (1f - k);
+            _rig.AimArm(BossRig.Arm.Right, SwingDir(Mathf.Lerp(14f, -75f, ease), Mathf.Lerp(0.1f, -0.2f, ease)), 1f);
+            _rig.AimArm(BossRig.Arm.Left, SwingDir(Mathf.Lerp(-14f, 75f, ease), Mathf.Lerp(0.1f, -0.2f, ease)), 1f);
+            _rig.CurlHand(BossRig.Arm.Right, 0.9f, 1f);
+            _rig.CurlHand(BossRig.Arm.Left, 0.9f, 1f);
+
+            SetAnimSpeed(0f);
+            ApplyGravity(dir * (speed * (1f - ease) * 0.5f)); // 관성으로 미끄러지며 정지
+
+            // 스쳐 지나간 직후라도 발톱이 실제로 지나가는 순간 한 번 더 판정
+            if (!hit && ease > 0.4f && TryRushHit()) hit = true;
+            yield return null;
+        }
+        _claw?.SetEmitting(false);
+        _clawLeft?.SetEmitting(false);
+
+        // --- 3-b) 3단계: 달려든 자리에서 그대로 3연타로 몰아친다 ---
+        // 여기서 뒷정리를 하지 않고 넘기는 이유는, MeleeRoutine이 자기 후딜과
+        // _busy/_phase 해제를 그대로 이어받기 때문이다(연타 뒤에 후딜이 두 번 오지 않는다).
+        if (Stage >= 3)
+        {
+            _nextRush = Time.time + rushCooldown;
+
+            // 지나쳐 달렸다면 등을 진 채 허공을 후려치게 되므로, 짧게 돌아선다
+            for (float t = 0f; t < 0.18f; t += Time.deltaTime)
+            {
+                TrackTarget(turnSpeed * 2.5f);
+                HoldStill();
+                yield return null;
+            }
+
+            yield return MeleeRoutine(Mathf.Max(2, meleeComboHits));
+            yield break;
+        }
+
+        // --- 4) 후딜: 빗나갔으면 더 오래 굳는다(반격 기회) ---
+        float recover = rushRecover * (hit ? 1f : 1.35f);
+        for (float t = 0f; t < recover; t += Time.deltaTime)
+        {
+            float w = 1f - Mathf.Clamp01(t / recover);
+            _rig.AimArm(BossRig.Arm.Right, SwingDir(-75f, -0.2f), w);
+            _rig.AimArm(BossRig.Arm.Left, SwingDir(75f, -0.2f), w);
+            _rig.CurlHand(BossRig.Arm.Right, 0.6f, w);
+            _rig.CurlHand(BossRig.Arm.Left, 0.6f, w);
+            TrackTarget(turnSpeed * 0.4f);
+            HoldStill();
+            yield return null;
+        }
+
+        _nextRush = Time.time + rushCooldown;
+        // 돌진 직후 바로 할퀴면 피할 수 없는 연계가 된다 — 최소한의 숨 돌릴 틈
+        _nextMelee = Mathf.Max(_nextMelee, Time.time + 0.4f);
+        _busy = false;
+        _phase = Phase.Idle;
+    }
+
+    /// <summary>돌진 거리(월드 m). 목표를 조금 지나칠 만큼 달리되, 최대 속도×시간을 넘지 않는다.</summary>
+    private float RushLength()
+    {
+        float max = rushSpeed * _k * rushTime;
+        if (_targetT == null) return max;
+
+        Vector3 flat = _targetT.position - transform.position;
+        flat.y = 0f;
+        return Mathf.Clamp(flat.magnitude + rushOvershoot * _k, rushMinRange * _k, max);
+    }
+
+    /// <summary>바닥에 돌진 통로를 그린다(발밑에서 고정된 정면 방향으로).</summary>
+    private void ShowRushPath(float alpha, float halfWidth)
+    {
+        if (_rushPath == null) return;
+        Vector3 from = transform.position + Vector3.up * (0.05f * _k);
+        _rushPath.Show(from, from + transform.forward * RushLength(), halfWidth, alpha);
+    }
+
+    /// <summary>돌진 중 받힘 판정. 몸 중심 기준 rushRadius 안이면 한 번만 후려친다.</summary>
+    private bool TryRushHit()
+    {
+        if (_targetT == null) return false;
+
+        Vector3 to = TargetCenter() - BodyCenter();
+        float heightGap = Mathf.Abs(to.y);
+        to.y = 0f;
+        if (heightGap > _cc.height * Mathf.Abs(transform.lossyScale.y)) return false;
+
+        float radius = rushRadius * _k + TargetRadius();
+        if (to.sqrMagnitude > radius * radius) return false;
+
+        // 이미 등 뒤로 완전히 지나쳐 버린 대상은 치지 않는다
+        if (Vector3.Dot(to, transform.forward) < -radius * 0.5f) return false;
+
+        DamagePlayer(rushDamage, TargetCenter(), strong: true);
+        if (_cam != null) _cam.AddFovKick(5f);
+        return true;
+    }
+
+    // ---------- 등장 컷신 ----------
+
+    /// <summary>
+    /// 게임 시작 연출. 보스는 은신한 채 서 있고, 카메라가 그 빈 자리를 천천히 돌며 비춘다.
+    /// 아무것도 없는 자리를 먼저 보여줘야(introHoldTime) 나타나는 순간이 산다.
+    ///
+    /// 컷신 동안 플레이어 조작은 잠긴다(CutsceneActive) — 카메라가 보스를 보고 있는데
+    /// 조작이 열려 있으면 화면 밖에서 움직이게 된다.
+    /// </summary>
+    private IEnumerator IntroRoutine()
+    {
+        _busy = true;
+        CutsceneActive = true;
+        SetHidden(true);
+        SetAnimSpeed(0f);
+
+        // Update가 Intro 동안 돌지 않으므로 여기서 직접 잡아 둔다(플레이어를 마주 보기 위해)
+        AcquireTarget();
+        if (_cam == null) _cam = Camera.main != null ? Camera.main.GetComponent<ThirdPersonCamera>() : null;
+
+        yield return new WaitForSeconds(introDelay);
+
+        // --- 1) 빈 자리를 비춘다 ---
+        _cam?.SetCinematicFocus(transform);
+        yield return new WaitForSeconds(introHoldTime);
+
+        // --- 2) 등장: 섬광과 함께 모습을 드러내며 포효한다 ---
+        _flash?.Spawn(BodyCenter());
+        SetHidden(false);
+        GameSfx.PlayAt(Sfx.BossRoar, BodyCenter());
+        if (_cam != null) { _cam.AddShake(0.9f, 0.6f); _cam.AddFovKick(6f); }
+
+        // 위협하듯 양팔을 벌린 자세를 잡았다가 서서히 내린다
+        for (float t = 0f; t < introRevealTime; t += Time.deltaTime)
+        {
+            float k = Mathf.Clamp01(t / introRevealTime);
+            float w = k < 0.4f ? k / 0.4f : 1f - (k - 0.4f) / 0.6f; // 들었다가 내린다
+
+            _rig.AimArm(BossRig.Arm.Right, SwingDir(70f, 0.45f), w);
+            _rig.AimArm(BossRig.Arm.Left, SwingDir(-70f, 0.45f), w);
+            _rig.CurlHand(BossRig.Arm.Right, 0.8f, w);
+            _rig.CurlHand(BossRig.Arm.Left, 0.8f, w);
+
+            TrackTarget(turnSpeed * 0.8f);
+            HoldStill();
+            yield return null;
+        }
+
+        // --- 3) 카메라를 플레이어에게 돌려주고 전투 시작 ---
+        _cam?.SetCinematicFocus(null);
+        yield return new WaitForSeconds(0.5f); // 카메라가 돌아오는 동안은 아직 잠금
+
+        CutsceneActive = false;
+        _busy = false;
+        _phase = Phase.Idle;
+
+        // 등장 직후 곧바로 덮치지 않도록 한 박자 준다
+        _nextMelee = Time.time + 0.8f;
+        _nextLaser = Time.time + 1.2f;
+    }
+
+    // ---------- 공중 처형 (분신 처형 이후) ----------
+
+    /// <summary>
+    /// 분신 처형을 넘긴 뒤에만 열리는 마지막 패턴.
+    /// 아레나 한가운데 상공으로 텔레포트해 내려다보며 구체를 연달아 쏟아붓는다.
+    ///
+    /// 설계 의도
+    ///  - 보스가 <b>공중에 멈춰 서므로</b> 근접·돌진이 전부 봉인된다. 대신 플레이어도
+    ///    엄폐물이 없는 한가운데를 계속 노려보게 되어, 이 패턴 동안은 순수한 회피전이 된다.
+    ///  - 구체는 하나씩 날아오므로 위치를 계속 바꾸며 흘려야 한다.
+    ///  - 다 쏘고 나면 공중에서 잠시 굳는다 — 올려다보고 쏠 수 있는 확실한 반격 구간.
+    /// </summary>
+    private IEnumerator AerialBarrageRoutine()
+    {
+        _busy = true;
+        _phase = Phase.Aerial;
+        SetAnimSpeed(0f);
+
+        // --- 1) 사라짐 ---
+        _flash?.Spawn(BodyCenter());
+        GameSfx.PlayAt(Sfx.BossTeleport, BodyCenter(), pitch: 1.15f);
+        if (_cam != null) _cam.AddShake(0.3f, 0.25f);
+        yield return new WaitForSeconds(teleportVanishTime * 0.5f);
+        SetHidden(true);
+        yield return new WaitForSeconds(teleportVanishTime * 0.5f);
+
+        // --- 2) 아레나 한가운데 상공으로 ---
+        // 높이는 아레나 오브젝트의 원점이 아니라 '실제 바닥'을 재서 올린다 —
+        // 원점이 바닥과 다른 씬에서 땅에 박히거나 너무 높이 뜨는 것을 막는다.
+        ResolveJudgmentRing(out Vector3 center, out _);
+        Vector3 spot = center + Vector3.up * aerialHeight;
+        if (TryFindFloor(center, out float floorY))
+            spot.y = floorY + aerialHeight;
+
+        WarpTo(spot);
+        TrackTarget(999f); // 즉시 플레이어 쪽을 본다
+
+        // --- 3) 등장 ---
+        yield return new WaitForSeconds(teleportAppearTime * 0.5f);
+        SetHidden(false);
+        _flash?.Spawn(BodyCenter());
+        GameSfx.PlayAt(Sfx.BossTeleport, BodyCenter(), pitch: 0.75f);
+        if (_cam != null) { _cam.AddShake(0.6f, 0.4f); _cam.AddFovKick(4f); }
+
+        // --- 4) 겨눔: 왼팔을 뻗고 충전 ---
+        // 이 아래로는 ApplyGravity를 부르지 않는다 — 부르는 순간 추락한다.
+        _aimDir = AimDirection();
+        _orbOn = true;
+        _orbCharge = 0f;
+        GameSfx.PlayAt(Sfx.BossCharge, MuzzlePoint(), pitch: 1.1f);
+
+        for (float t = 0f; t < aerialAimTime; t += Time.deltaTime)
+        {
+            float k = Mathf.Clamp01(t / aerialAimTime);
+            _aimDir = TrackAim(_aimDir, 1f);
+            _rig.AimArm(BossRig.Arm.Left, _aimDir, k);
+            _rig.PointIndex(BossRig.Arm.Left, k);
+            _orbCharge = k;
+            TrackTarget(turnSpeed);
+            SetAnimSpeed(0f);
+            yield return null;
+        }
+
+        // --- 5) 연속 사격: 매 발 다시 겨눈다 ---
+        int shots = Mathf.Max(1, aerialBarrageCount);
+        for (int i = 0; i < shots; i++)
+        {
+            for (float t = 0f; t < aerialBarrageInterval; t += Time.deltaTime)
+            {
+                _aimDir = TrackAim(_aimDir, 1f);
+                _rig.AimArm(BossRig.Arm.Left, _aimDir, 1f);
+                _rig.PointIndex(BossRig.Arm.Left, 1f);
+                _orbCharge = Mathf.Lerp(0.35f, 1f, Mathf.Clamp01(t / aerialBarrageInterval));
+                TrackTarget(turnSpeed);
+                SetAnimSpeed(0f);
+                yield return null;
+            }
+
+            FireOrb(_aimDir);
+            _orbCharge = 0.35f;
+        }
+        _orbOn = false;
+
+        // --- 6) 후딜: 공중에 굳어 있다(반격 구간) ---
+        for (float t = 0f; t < aerialRecover; t += Time.deltaTime)
+        {
+            float w = 1f - Mathf.Clamp01(t / aerialRecover);
+            _rig.AimArm(BossRig.Arm.Left, _aimDir, w);
+            _rig.PointIndex(BossRig.Arm.Left, w);
+            TrackTarget(turnSpeed * 0.5f);
+            SetAnimSpeed(0f);
+            yield return null;
+        }
+
+        // --- 7) 지상 복귀 ---
+        _flash?.Spawn(BodyCenter());
+        GameSfx.PlayAt(Sfx.BossTeleport, BodyCenter(), pitch: 0.9f);
+        SetHidden(true);
+        yield return new WaitForSeconds(teleportVanishTime * 0.5f);
+        ReturnToArena();
+        SetHidden(false);
+        if (_cam != null) _cam.AddShake(0.45f, 0.35f);
+
+        _nextAerial = Time.time + aerialCooldown;
+        _nextMelee = Mathf.Max(_nextMelee, Time.time + 0.5f);
+        _busy = false;
+        _phase = Phase.Idle;
+    }
+
+    /// <summary>지정한 지점 아래의 바닥 높이(자기 몸/플레이어는 무시). 못 찾으면 false.</summary>
+    private bool TryFindFloor(Vector3 at, out float y)
+    {
+        y = 0f;
+        float up = 20f * _k;
+        int n = Physics.RaycastNonAlloc(at + Vector3.up * up, Vector3.down, _hitBuf,
+                                        up * 2f, obstacleMask, QueryTriggerInteraction.Ignore);
+        bool found = false;
+        float best = float.MinValue;
+        for (int i = 0; i < n; i++)
+        {
+            var h = _hitBuf[i];
+            if (h.collider == null) continue;
+            if (h.collider.transform.IsChildOf(transform)) continue;
+            if (_targetT != null && h.collider.transform.IsChildOf(_targetT)) continue;
+            if (h.point.y > best) { best = h.point.y; found = true; }
+        }
+        if (found) y = best;
+        return found;
+    }
+
+    // ---------- 하늘 레이저 강우 (2단계~) ----------
+
+    /// <summary>
+    /// 팔을 하늘로 뻗어 레이저를 쏘아 올리면, 잠시 뒤 그것이 플레이어 주변으로 쏟아져 내린다.
+    /// 낙하물은 텔레포트 충격파와 같은 예고(링 + 카운트다운 링 + 빛기둥)를 쓰므로,
+    /// 플레이어가 이미 배운 규칙 그대로 읽고 피할 수 있다.
+    /// 3단계에서는 떨어지는 것이 레이저 대신 구체가 된다.
+    /// </summary>
+    private IEnumerator SkyRainRoutine()
+    {
+        _busy = true;
+        _phase = Phase.Laser;
+        SetAnimSpeed(0f);
+
+        Vector3 up = Vector3.up;
+        _orbOn = true;
+        _orbCharge = 0f;
+        GameSfx.PlayAt(Sfx.BossCharge, MuzzlePoint(), pitch: 1.15f);
+
+        // 1) 하늘을 향해 팔을 들어 올린다 — 조준이 아니라 '위'를 겨누는 것이 신호다
+        for (float t = 0f; t < skyRainAimTime; t += Time.deltaTime)
+        {
+            float k = Mathf.Clamp01(t / skyRainAimTime);
+            _rig.AimArm(BossRig.Arm.Left, up, k);
+            _rig.PointIndex(BossRig.Arm.Left, k);
+            _orbCharge = 0.15f * k;
+            TrackTarget(turnSpeed * 0.6f);
+            HoldStill();
+            yield return null;
+        }
+
+        // 2) 충전
+        for (float t = 0f; t < skyRainChargeTime; t += Time.deltaTime)
+        {
+            _rig.AimArm(BossRig.Arm.Left, up, 1f);
+            _rig.PointIndex(BossRig.Arm.Left, 1f);
+            _orbCharge = Mathf.Lerp(0.15f, 1f, Mathf.Clamp01(t / skyRainChargeTime));
+            HoldStill();
+            yield return null;
+        }
+
+        // 3) 하늘로 발사 — 이 광선이 곧 머리 위에서 되돌아온다
+        Vector3 from = MuzzlePoint();
+        if (_orb != null) _orb.Burst();
+        if (_beam != null) _beam.Fire(from, from + up * (laserRange * _k), laserBeamTime * BeamVisualStretch);
+        _muzzleFx?.Fire(from, up);
+        GameSfx.PlayAt(Sfx.BossLaser, from, pitch: 0.85f);
+        if (_cam != null) { _cam.AddShake(0.5f, 0.35f); _cam.AddFovKick(3.5f); }
+
+        _beamFiring = true;
+        for (float t = 0f; t < laserBeamTime; t += Time.deltaTime)
+        {
+            _rig.AimArm(BossRig.Arm.Left, up, 1f);
+            _rig.PointIndex(BossRig.Arm.Left, 1f);
+            _orbCharge = Mathf.Lerp(1f, 0f, t / laserBeamTime);
+            HoldStill();
+            yield return null;
+        }
+        _beamFiring = false;
+        _orbOn = false;
+
+        // 4) 쏟아진다. 뿌리는 동안 팔을 내리며 다음 행동으로 넘어간다
+        StartCoroutine(RainRoutine(skyRainCount, FallStyle));
+
+        for (float t = 0f; t < laserRecover; t += Time.deltaTime)
+        {
+            float w = 1f - Mathf.Clamp01(t / laserRecover);
+            _rig.AimArm(BossRig.Arm.Left, up, w);
+            _rig.PointIndex(BossRig.Arm.Left, w);
+            TrackTarget(turnSpeed * 0.5f);
+            HoldStill();
+            yield return null;
+        }
+
+        _nextSkyRain = Time.time + skyRainCooldown;
+        _nextLaser = Mathf.Max(_nextLaser, Time.time + 1f); // 강우 직후 레이저까지 겹치지 않게
+        _busy = false;
+        _phase = Phase.Idle;
+    }
+
+    /// <summary>단계에 따라 하늘에서 떨어지는 것의 모양이 바뀐다(2단계 레이저 / 3단계 구체).</summary>
+    private BossMeteor.Style FallStyle => Stage >= 3 ? BossMeteor.Style.Orb : BossMeteor.Style.Beam;
+
+    // ---------- 레이저 구체 (3단계 — 레이저 대체) ----------
+
+    /// <summary>
+    /// 3단계의 원거리 공격. 조준 레이저 대신 구체를 연달아 던진다.
+    /// 레이저는 발사 순간에 판정이 끝나지만 구체는 <b>날아오는 동안 계속 보이므로</b>,
+    /// "예고를 보고 피한다"에서 "날아오는 것을 보고 비킨다"로 회피 방식이 바뀐다.
+    /// </summary>
+    private IEnumerator OrbBurstRoutine()
+    {
+        _busy = true;
+        _phase = Phase.Laser;
+        SetAnimSpeed(0f);
+
+        _aimDir = AimDirection();
+        _orbOn = true;
+        _orbCharge = 0f;
+        GameSfx.PlayAt(Sfx.BossCharge, MuzzlePoint(), pitch: 1.25f);
+
+        // 사전 동작: 왼손을 앞으로 뻗는다(레이저와 같은 자세라 3단계 진입이 바로 읽힌다)
+        for (float t = 0f; t < laserAimTime; t += Time.deltaTime)
+        {
+            float k = Mathf.Clamp01(t / laserAimTime);
+            _aimDir = TrackAim(_aimDir, 1f);
+            _rig.AimArm(BossRig.Arm.Left, _aimDir, k);
+            _rig.PointIndex(BossRig.Arm.Left, k);
+            _orbCharge = 0.3f * k;
+            TrackTarget(turnSpeed);
+            HoldStill();
+            yield return null;
+        }
+
+        int shots = Mathf.Max(1, orbBurstCount);
+        for (int i = 0; i < shots; i++)
+        {
+            // 한 발마다 다시 겨눈다 — 옆으로 걷는 것만으로는 전부 흘릴 수 없다
+            for (float t = 0f; t < orbInterval; t += Time.deltaTime)
+            {
+                _aimDir = TrackAim(_aimDir, 1f);
+                _rig.AimArm(BossRig.Arm.Left, _aimDir, 1f);
+                _rig.PointIndex(BossRig.Arm.Left, 1f);
+                _orbCharge = Mathf.Lerp(0.3f, 1f, Mathf.Clamp01(t / orbInterval));
+                TrackTarget(turnSpeed);
+                HoldStill();
+                yield return null;
+            }
+
+            FireOrb(_aimDir);
+            _orbCharge = 0.3f;
+        }
+
+        _orbOn = false;
+
+        // 후딜: 팔을 내린다
+        for (float t = 0f; t < laserRecover; t += Time.deltaTime)
+        {
+            float w = 1f - Mathf.Clamp01(t / laserRecover);
+            _rig.AimArm(BossRig.Arm.Left, _aimDir, w);
+            _rig.PointIndex(BossRig.Arm.Left, w);
+            TrackTarget(turnSpeed * 0.5f);
+            HoldStill();
+            yield return null;
+        }
+
+        _nextLaser = Time.time + laserCooldown;
+        _busy = false;
+        _phase = Phase.Idle;
+    }
+
+    /// <summary>구체 한 발. 손끝에서 조준 방향으로 날아간다.</summary>
+    private void FireOrb(Vector3 dir)
+    {
+        Vector3 from = MuzzlePoint();
+        if (_orb != null) _orb.Burst();
+        _muzzleFx?.Fire(from, dir);
+        GameSfx.PlayAt(Sfx.BossLaser, from, pitch: 1.3f); // 레이저보다 가볍고 높게
+        if (_cam != null) _cam.AddShake(0.18f, 0.18f);
+
+        BossOrb.Launch(from, dir, _k, bossColor, orbDamage, orbRadius * _k,
+                       orbSpeed * _k, orbLife, _targetT, transform, obstacleMask);
     }
 
     // ---------- 레이저 ----------
@@ -588,6 +1334,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
         // 2) 충전: 일렁임이 점점 빨라지고 예고선이 진해진다.
         //    마지막 laserLockTime 동안엔 조준 추적이 멈춰(고정) 구르기로 피할 수 있다.
+        bool lockCued = false;
         for (float t = 0f; t < laserChargeTime; t += Time.deltaTime)
         {
             float k = Mathf.Clamp01(t / laserChargeTime);
@@ -598,7 +1345,15 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
             _rig.AimArm(BossRig.Arm.Left, _aimDir, 1f);
             _rig.PointIndex(BossRig.Arm.Left, 1f);
             _orbCharge = Mathf.Lerp(0.12f, 1f, k);
-            _previewAlpha = Mathf.Lerp(0.05f, 0.55f, k * k);
+            _previewAlpha = Mathf.Lerp(0.3f, 1f, k * k);   // 예고선은 처음부터 또렷하게
+
+            // 조준이 고정되는 순간을 흰 경고선 + 짧은 진동으로 확실히 알린다
+            _aimLocked = track < 0.999f;
+            if (_aimLocked && !lockCued)
+            {
+                lockCued = true;
+                if (_cam != null) _cam.AddShake(0.12f, 0.15f);
+            }
 
             TrackTarget(turnSpeed * track); // 조준이 고정되면 몸도 멈춘다
             HoldStill();
@@ -607,6 +1362,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
         // 3) 발사: 고정된 방향으로 광선이 나간다
         _previewAlpha = 0f;
+        _aimLocked = false;
         _beamFiring = true;
         FireLaser(_aimDir);
 
@@ -645,12 +1401,13 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
         if (_orb != null) _orb.Burst();
         if (_beam != null) _beam.Fire(from, to, laserBeamTime * BeamVisualStretch);
-        if (_cam != null) { _cam.AddShake(0.25f, 0.25f); _cam.AddFovKick(2f); }
+        _muzzleFx?.Fire(from, dir);
+        if (_cam != null) { _cam.AddShake(0.55f, 0.35f); _cam.AddFovKick(4.5f); }
         GameSfx.PlayAt(Sfx.BossLaser, from);
 
-        // 착탄 이펙트(벽에 맞았을 때)
+        // 착탄 이펙트(벽에 맞았을 때) — 광선 굵기에 맞춰 큼직하게 터진다
         if (RaycastIgnoreSelf(from, dir, length, out RaycastHit wall))
-            _impact?.Spawn(wall.point, wall.normal);
+            _beamImpact?.Spawn(wall.point, wall.normal);
 
         // 명중 판정: 광선 선분과 플레이어 중심의 거리로 본다.
         // 발사 직전 방향이 고정되므로, 구르기로 옆으로 빠지면 선분에서 벗어나 피할 수 있다.
@@ -722,10 +1479,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         yield return new WaitForSeconds(teleportVanishTime * 0.5f);
 
         // 2) 이동: 플레이어 등 뒤(기본) 또는 정면
-        _cc.enabled = false;
-        transform.position = spot;
-        _cc.enabled = true;
-        _verticalVelocity = 0f;
+        WarpTo(spot);
         if (_targetT != null)
         {
             Vector3 look = _targetT.position - transform.position;
@@ -740,13 +1494,17 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         GameSfx.PlayAt(Sfx.BossTeleport, BodyCenter(), pitch: 0.8f); // 나타날 때는 낮고 무겁게
         if (_cam != null) { _cam.AddShake(0.45f, 0.35f); _cam.AddFovKick(-2.5f); }
 
-        // 등장 충격파: 플레이어의 발을 묶고, 하늘에서 운석이 쏟아진다
-        if (_targetController != null && teleportSlowFactor < 1f)
-            _targetController.ApplyMoveSlow(teleportSlowFactor, teleportSlowTime);
-        if (meteorCount > 0 && Time.time >= _nextMeteorTime)
+        // 등장 충격파는 2단계부터다 — 1단계 텔레포트는 '접근'만 하고 아무것도 터뜨리지 않는다.
+        // (초반부터 둔화 + 낙하물이 겹치면 패턴을 익힐 틈이 없다)
+        if (Stage >= 2)
         {
-            _nextMeteorTime = Time.time + meteorCooldown;
-            StartCoroutine(MeteorStormRoutine());
+            if (_targetController != null && teleportSlowFactor < 1f)
+                _targetController.ApplyMoveSlow(teleportSlowFactor, teleportSlowTime);
+            if (meteorCount > 0 && Time.time >= _nextMeteorTime)
+            {
+                _nextMeteorTime = Time.time + meteorCooldown;
+                StartCoroutine(RainRoutine(meteorCount, FallStyle));
+            }
         }
 
         yield return new WaitForSeconds(teleportAppearTime * 0.5f);
@@ -758,17 +1516,19 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     }
 
     /// <summary>
-    /// 텔레포트 충격파로 쏟아지는 운석. 플레이어 주변에 예고 링이 먼저 뜨고 잠시 뒤 떨어진다.
+    /// 하늘에서 쏟아지는 것들(텔레포트 충격파 / 하늘 레이저 강우 공용).
+    /// 플레이어 주변에 예고 링이 먼저 뜨고 잠시 뒤 떨어진다.
     /// 이동이 둔해진 상태라 그냥 걷기로는 빠져나가기 어렵고, 구르기로 회피해야 한다.
-    /// 운석은 각자 알아서 낙하/착탄을 처리하므로 이 코루틴은 뿌리기만 한다.
+    /// 낙하물은 각자 알아서 낙하/착탄을 처리하므로 이 코루틴은 뿌리기만 한다.
     /// </summary>
-    private IEnumerator MeteorStormRoutine()
+    private IEnumerator RainRoutine(int count, BossMeteor.Style style)
     {
-        for (int i = 0; i < meteorCount; i++)
+        for (int i = 0; i < count; i++)
         {
             if (_targetT == null) yield break;
             if (TryPickMeteorPoint(out Vector3 point))
-                BossMeteor.Launch(point, _k, bossColor, meteorDamage, meteorRadius * _k, meteorFallTime, _targetT);
+                BossMeteor.Launch(point, _k, bossColor, meteorDamage, meteorRadius * _k,
+                                  meteorFallTime, _targetT, style);
             yield return new WaitForSeconds(meteorInterval);
         }
     }
@@ -937,10 +1697,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
             if (i == realIndex)
             {
-                _cc.enabled = false;
-                transform.SetPositionAndRotation(pos, rot);
-                _cc.enabled = true;
-                _verticalVelocity = 0f;
+                WarpTo(pos, rot);
             }
             else
             {
@@ -966,7 +1723,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
             foreach (var c in _clones) if (c != null) c.SetCharge(k01);
 
             _orbCharge = k01;
-            _previewAlpha = Mathf.Lerp(0.05f, 0.5f, k01 * k01);
+            _previewAlpha = Mathf.Lerp(0.3f, 0.95f, k01 * k01);
             _aimDir = Vector3.RotateTowards(_aimDir, AimDirection(), 360f * Mathf.Deg2Rad * Time.deltaTime, 0f);
             _rig.AimArm(BossRig.Arm.Left, _aimDir, 1f);
             _rig.PointIndex(BossRig.Arm.Left, 1f);
@@ -995,6 +1752,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _nextMelee = Time.time + 0.6f;
         _nextLaser = Time.time + 1.5f;
         _farTimer = 0f;
+
+        // 분신 처형이 끝난 직후부터 '공중 처형'이 열린다 — 첫 발동은 조금 뒤로 미뤄
+        // 파훼 보상(경직 동안의 반격)을 챙길 틈을 준다.
+        _nextAerial = Time.time + aerialFirstDelay;
     }
 
     /// <summary>파훼 성공: 분신이 일제히 흩어지고 진짜는 잠시 무방비로 굳는다.</summary>
@@ -1101,10 +1862,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         }
 
         _flash?.Spawn(BodyCenter());
-        _cc.enabled = false;
-        transform.position = spot;
-        _cc.enabled = true;
-        _verticalVelocity = 0f;
+        WarpTo(spot);
         _flash?.Spawn(BodyCenter());
     }
 
@@ -1159,6 +1917,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
     private void Die()
     {
+        AbortCutscene(); // 컷신 도중 죽는 구성이라도 잠금은 풀린다
         StopAllCoroutines();
         ResetAttackState();
         _phase = Phase.Dead;
@@ -1248,6 +2007,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _targetDamage = _targetT.GetComponentInParent<IDamageable>();
         _targetController = _targetT.GetComponentInParent<PlayerController>();
         if (_cam == null) _cam = Camera.main != null ? Camera.main.GetComponent<ThirdPersonCamera>() : null;
+
+        // 플레이어를 이제 막 찾았다면 캡슐 충돌 무시도 여기서 확실히 걸어 둔다
+        // (보스 Awake 시점에 플레이어가 아직 없던 구성이면 그때는 걸리지 않았다)
+        if (_playerCc == null) IgnoreHitboxCollisions();
         return true;
     }
 
@@ -1375,6 +2138,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _orbOn = false;
         _orbCharge = 0f;
         _previewAlpha = 0f;
+        _aimLocked = false;
         _farTimer = 0f;
         _judgmentActive = false;
         if (_orb != null) { _orb.Visible = false; _orb.Charge = 0f; }
@@ -1384,6 +2148,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         DespawnClones();
         _claw?.SetEmitting(false);
         _clawLeft?.SetEmitting(false);
+        _rushPath?.Hide();
         SetHidden(false);
     }
 
@@ -1392,6 +2157,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         float k = Application.isPlaying ? _k : 1f;
         Gizmos.color = new Color(1f, 0.4f, 0.2f, 0.7f);
         Gizmos.DrawWireSphere(transform.position, meleeRange * k);
+        Gizmos.color = new Color(1f, 0.8f, 0.2f, 0.5f); // 돌진 발동 거리대
+        Gizmos.DrawWireSphere(transform.position, rushMinRange * k);
+        Gizmos.DrawWireSphere(transform.position, rushMaxRange * k);
         Gizmos.color = new Color(0.7f, 0.3f, 1f, 0.4f);
         Gizmos.DrawWireSphere(transform.position, laserRange * k);
         Gizmos.color = new Color(0.3f, 0.9f, 1f, 0.3f);

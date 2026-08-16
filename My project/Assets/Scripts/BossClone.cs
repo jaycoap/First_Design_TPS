@@ -99,7 +99,9 @@ public class BossClone : MonoBehaviour, IDamageable
         }
 
         Transform tip = _rig != null ? _rig.IndexTip(BossRig.Arm.Left) : null;
-        _orb = BossFx.BuildChargeOrb(tip != null ? tip : transform, _k, color);
+        // 분신은 10기가 동시에 뜬다 — 각자 점광원을 켜면 광원 개수 제한을 크게 넘겨
+        // 매 프레임 어느 광원을 쓸지가 뒤바뀌며 화면이 번쩍인다. 구체 글로우만으로 충분하다.
+        _orb = BossFx.BuildChargeOrb(tip != null ? tip : transform, _k, color, withLight: false);
         _beam = BossFx.BuildBeam(transform, _k, color);
         _flash = BossFx.BuildFlash(_k, color);
         _flash.Spawn(BodyCenter()); // 등장 번쩍임
@@ -180,7 +182,7 @@ public class BossClone : MonoBehaviour, IDamageable
         if (_charging && _beam != null)
         {
             Vector3 from = MuzzlePoint();
-            _beam.Preview(from, from + _aimDir * (200f * _k), Mathf.Lerp(0.05f, 0.5f, _charge * _charge));
+            _beam.Preview(from, from + _aimDir * (200f * _k), Mathf.Lerp(0.3f, 0.95f, _charge * _charge));
         }
     }
 

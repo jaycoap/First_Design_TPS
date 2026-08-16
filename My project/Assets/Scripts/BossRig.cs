@@ -23,6 +23,15 @@ public class BossRig : MonoBehaviour
     [Tooltip("손가락 한 마디당 최대 구부림 각도(할퀴기)")]
     [SerializeField] private float fingerCurlAngle = 45f;
 
+    [Header("모션 보간")]
+    [Tooltip("팔 가중치가 요청값을 따라가는 속도(1/초). 이 값이 없으면 패턴이 바뀌는 순간\n" +
+             "가중치가 0↔1로 튀어 팔이 뚝뚝 끊겨 보인다. 낮출수록 부드럽고 느긋해진다.")]
+    [SerializeField] private float weightBlendSpeed = 14f;
+    [Tooltip("겨냥 방향이 따라 도는 최대 각속도(도/초).\n" +
+             "돌진처럼 팔 방향이 크게 바뀌는 구간에서 순간이동하듯 꺾이는 것을 막는다.\n" +
+             "휘두르는 속도(약 800도/초)보다는 커야 스윙이 늘어지지 않는다.")]
+    [SerializeField] private float dirBlendSpeed = 1000f;
+
     private struct ArmPose
     {
         public Vector3 dir;      // 겨냥할 월드 방향
@@ -33,8 +42,10 @@ public class BossRig : MonoBehaviour
     }
 
     private Animator _anim;
-    private ArmPose[] _pose = new ArmPose[2];
+    private ArmPose[] _pose = new ArmPose[2];    // 이번 프레임에 들어온 요청(매 프레임 초기화)
+    private ArmPose[] _smooth = new ArmPose[2];  // 실제로 적용하는 값(요청을 따라 부드럽게 이동)
     private float _spineTwist, _spineWeight;
+    private float _smoothTwist, _smoothTwistWeight;
 
     // 본 캐시
     private readonly Transform[] _upper = new Transform[2];
@@ -123,18 +134,51 @@ public class BossRig : MonoBehaviour
     {
         if (!_ready) { ClearRequests(); return; }
 
-        if (_spineWeight > 0.001f && _chest != null)
-            _chest.rotation = Quaternion.AngleAxis(_spineTwist * _spineWeight, transform.up) * _chest.rotation;
+        float dt = Time.deltaTime;
+
+        // 요청값을 그대로 쓰지 않고 한 단계 보간해서 적용한다.
+        // 요청은 매 프레임 초기화되므로, 패턴이 끝나 요청이 끊기면 가중치가 0으로
+        // 서서히 내려가며 팔이 자연스럽게 애니메이션 포즈로 돌아간다(예전엔 즉시 튀었다).
+        _smoothTwist = Mathf.MoveTowards(_smoothTwist, _spineTwist, 720f * dt);
+        _smoothTwistWeight = Mathf.MoveTowards(_smoothTwistWeight, _spineWeight, weightBlendSpeed * dt);
+
+        if (_smoothTwistWeight > 0.001f && _chest != null)
+            _chest.rotation = Quaternion.AngleAxis(_smoothTwist * _smoothTwistWeight, transform.up) * _chest.rotation;
 
         for (int a = 0; a < 2; a++)
         {
-            ref ArmPose p = ref _pose[a];
+            BlendPose(a, dt);
+
+            ref ArmPose p = ref _smooth[a];
+            if (p.dir.sqrMagnitude < 1e-6f) continue;
             if (p.aim > 0.001f) ApplyArmAim(a, p.dir.normalized, p.aim);
             if (p.point > 0.001f) ApplyPointIndex(a, p.dir.normalized, p.point);
             if (p.curlWeight > 0.001f) ApplyCurl(a, p.curl * p.curlWeight);
         }
 
         ClearRequests();
+    }
+
+    /// <summary>적용값(_smooth)을 이번 프레임 요청(_pose) 쪽으로 제한 속도만큼 옮긴다.</summary>
+    private void BlendPose(int a, float dt)
+    {
+        ref ArmPose want = ref _pose[a];
+        ref ArmPose cur = ref _smooth[a];
+
+        // 방향: 첫 요청이면 그대로 받고, 이후에는 각속도 제한을 걸어 크게 꺾이지 않게 한다
+        if (want.dir.sqrMagnitude > 1e-6f)
+        {
+            cur.dir = cur.dir.sqrMagnitude < 1e-6f
+                ? want.dir.normalized
+                : Vector3.RotateTowards(cur.dir.normalized, want.dir.normalized,
+                                        dirBlendSpeed * Mathf.Deg2Rad * dt, 0f);
+        }
+
+        float step = weightBlendSpeed * dt;
+        cur.aim = Mathf.MoveTowards(cur.aim, want.aim, step);
+        cur.point = Mathf.MoveTowards(cur.point, want.point, step);
+        cur.curlWeight = Mathf.MoveTowards(cur.curlWeight, want.curlWeight, step);
+        cur.curl = Mathf.MoveTowards(cur.curl, want.curl, step);
     }
 
     private void ClearRequests()

@@ -1,4 +1,6 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 /// <summary>
@@ -26,6 +28,10 @@ public class HudUI : MonoBehaviour
     private GameObject _bossRoot;
     private Image _bossFill;
     private Text _bossText;
+    // 게임 오버(사망 → R로 재시작)
+    private CanvasGroup _gameOver;
+    private bool _restarting;
+
     private GameObject _judgmentRoot;
     private Image _judgmentFill;
     private Image _judgmentBreakFill;
@@ -71,10 +77,11 @@ public class HudUI : MonoBehaviour
         }
 
         UpdateAbilities();
+        UpdateGameOver();
 
         // 보스 체력: 살아있는 보스가 씬에 있을 때만 상단 중앙에 표시
         var boss = BossController.Active;
-        bool showBoss = boss != null && !boss.IsDead;
+        bool showBoss = boss != null && !boss.IsDead && !boss.IntroPlaying; // 등장 컷신 전엔 숨긴다
         if (_bossRoot != null && _bossRoot.activeSelf != showBoss) _bossRoot.SetActive(showBoss);
         if (showBoss) SetBar(_bossFill, _bossText, boss.Health, boss.MaxHealth);
 
@@ -108,24 +115,30 @@ public class HudUI : MonoBehaviour
         bool ghost = _shift.GhostReady;
         float tf = _stats.TimeForce;
 
-        // T — 시간역행
+        // T — 시간역행. 쿨다운 중에는 채움이 쿨다운 진행을, 아니면 타임포스 충전을 보여 준다.
         float rewindNeed = _shift.RewindCost;
-        bool rewindOk = ghost && tf >= rewindNeed;
+        float rewindCd = _shift.RewindRemain;
+        bool rewindOk = rewindCd <= 0.01f && ghost && tf >= rewindNeed;
         _rewindChip.alpha = rewindOk ? 1f : 0.45f;
-        _rewindFill.fillAmount = rewindNeed > 0f ? Mathf.Clamp01(tf / rewindNeed) : 1f;
-        _rewindState.text = !ghost ? (_korean ? "재충전" : "RECHARGE")
+        _rewindFill.fillAmount = rewindCd > 0.01f
+            ? _shift.RewindCooldown01
+            : (rewindNeed > 0f ? Mathf.Clamp01(tf / rewindNeed) : 1f);
+        _rewindState.text = rewindCd > 0.01f ? $"{rewindCd:0.0}s"
+                          : !ghost ? (_korean ? "재충전" : "RECHARGE")
                           : rewindOk ? (_korean ? "준비" : "READY")
                           : $"TF -{Mathf.CeilToInt(rewindNeed - tf)}";
 
-        // G — 협공(발동 중에는 남은 시간을 채움으로 보여 준다)
+        // G — 협공(발동 중에는 남은 사격 시간을, 그 뒤에는 쿨다운을 채움으로 보여 준다)
         float supportNeed = _shift.SupportCost;
+        float supportCd = _shift.SupportRemain;
         bool supporting = TimeShiftController.SupportActive;
-        bool supportOk = ghost && tf >= supportNeed;
+        bool supportOk = supportCd <= 0.01f && ghost && tf >= supportNeed;
         _supportChip.alpha = supporting || supportOk ? 1f : 0.45f;
-        _supportFill.fillAmount = supporting
-            ? _shift.SupportRemain01
-            : (supportNeed > 0f ? Mathf.Clamp01(tf / supportNeed) : 1f);
+        _supportFill.fillAmount = supporting ? _shift.SupportRemain01
+                                : supportCd > 0.01f ? _shift.SupportCooldown01
+                                : (supportNeed > 0f ? Mathf.Clamp01(tf / supportNeed) : 1f);
         _supportState.text = supporting ? (_korean ? "발동 중" : "FIRING")
+                           : supportCd > 0.01f ? $"{supportCd:0.0}s"
                            : !ghost ? (_korean ? "재충전" : "RECHARGE")
                            : supportOk ? (_korean ? "준비" : "READY")
                            : $"TF -{Mathf.CeilToInt(supportNeed - tf)}";
@@ -143,6 +156,47 @@ public class HudUI : MonoBehaviour
             c.a = Mathf.Clamp01(toastLife - age); // 마지막 1초 동안 서서히 사라짐
             _toast.color = c;
         }
+    }
+
+    /// <summary>
+    /// 사망하면 화면을 어둡게 덮고 GAME OVER / RESTART? 를 띄운 뒤 R 입력을 기다린다.
+    /// 페이드는 unscaled 시간을 쓴다 — 나중에 사망 연출로 시간을 늦추더라도 UI는 제 속도로 뜬다.
+    /// </summary>
+    private void UpdateGameOver()
+    {
+        if (_gameOver == null || _stats == null) return;
+
+        bool dead = _stats.IsDead;
+        if (_gameOver.gameObject.activeSelf != dead) _gameOver.gameObject.SetActive(dead);
+        if (!dead) return;
+
+        const float fadeTime = 0.9f;
+        _gameOver.alpha = Mathf.Clamp01((Time.unscaledTime - _stats.DeathTime) / fadeTime);
+
+        // 커서를 돌려줘야 창 밖으로 뺄 수 있다(재시작하면 카메라가 다시 잠근다)
+        if (Cursor.lockState != CursorLockMode.None)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+
+        // R — 재시작. 연타로 두 번 로드되지 않게 한 번만 받는다.
+        if (!_restarting && Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
+        {
+            _restarting = true;
+            Restart();
+        }
+    }
+
+    /// <summary>현재 씬을 다시 불러 처음부터 시작한다.</summary>
+    private static void Restart()
+    {
+        // 씬을 넘어 살아남는 전역 상태를 먼저 정리한다.
+        // 이걸 빼먹으면 (예: 시간역행 도중에 죽으면) 재시작한 씬에서 조작이 잠긴 채로 시작한다.
+        TimeShiftController.ResetGlobalState();
+
+        Time.timeScale = 1f;
+        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
     }
 
     private static void SetBar(Image fill, Text label, float value, float max)
@@ -189,6 +243,7 @@ public class HudUI : MonoBehaviour
         BuildAbilityChips(canvas.transform);
         BuildBossBar(canvas.transform);
         BuildJudgmentWarning(canvas.transform);
+        BuildGameOver(canvas.transform);
     }
 
     /// <summary>
@@ -299,6 +354,47 @@ public class HudUI : MonoBehaviour
     /// 보스 "분신 처형" 경고. 진짜를 찾아 협공(G)해야 한다는 것과 남은 시간을 알린다.
     /// (이 패턴은 일반 사격으로는 파훼되지 않으므로, 안내가 없으면 사실상 즉사 패턴이 된다)
     /// </summary>
+    /// <summary>
+    /// 사망 화면. 전체를 어둡게 덮고 GAME OVER / RESTART? / R 안내를 세로로 세운다.
+    /// 다른 HUD보다 뒤늦게(맨 마지막에) 만들어야 캔버스 위에 얹혀 전부 가린다.
+    /// </summary>
+    private void BuildGameOver(Transform parent)
+    {
+        var dim = MakeImage(parent, "GameOver", new Color(0.03f, 0.01f, 0.02f, 0.78f));
+        var rt = dim.rectTransform;
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = Vector2.zero;
+        rt.offsetMax = Vector2.zero;
+
+        var title = MakeText(dim.transform, "Title", 96, FontStyle.Bold, TextAnchor.MiddleCenter);
+        title.text = "GAME OVER";
+        title.color = new Color(0.9f, 0.2f, 0.25f);
+        PlaceCentered(title.rectTransform, 90f, new Vector2(1200f, 120f));
+
+        var restart = MakeText(dim.transform, "Restart", 46, FontStyle.Bold, TextAnchor.MiddleCenter);
+        restart.text = "RESTART?";
+        restart.color = new Color(1f, 1f, 1f, 0.9f);
+        PlaceCentered(restart.rectTransform, -20f, new Vector2(800f, 60f));
+
+        var hint = MakeText(dim.transform, "Hint", 30, FontStyle.Normal, TextAnchor.MiddleCenter);
+        hint.text = _korean ? "R  키를 눌러 다시 시작" : "PRESS  R  TO RESTART";
+        hint.color = new Color(0.75f, 0.9f, 1f, 0.85f);
+        PlaceCentered(hint.rectTransform, -90f, new Vector2(800f, 50f));
+
+        _gameOver = dim.gameObject.AddComponent<CanvasGroup>();
+        _gameOver.alpha = 0f;
+        dim.gameObject.SetActive(false);
+    }
+
+    /// <summary>화면 중앙 기준으로 y만큼 띄워 배치.</summary>
+    private static void PlaceCentered(RectTransform rt, float y, Vector2 size)
+    {
+        rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = new Vector2(0f, y);
+        rt.sizeDelta = size;
+    }
+
     private void BuildJudgmentWarning(Transform parent)
     {
         var root = MakeImage(parent, "JudgmentWarning", new Color(0f, 0f, 0f, 0f));

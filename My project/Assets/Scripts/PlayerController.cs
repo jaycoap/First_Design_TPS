@@ -29,7 +29,11 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private float rollSpeedMultiplier = 1.2f;
     [Tooltip("구르기 전체 속도 배율. 애니메이션 재생 속도와 전방 이동 속도에 함께 곱해져\n" +
              "같은 궤적을 더 빠르게 지나간다(1 = 원래 속도). 회피를 민첩하게 만들 때 올린다.")]
-    [SerializeField] private float rollSpeedUp = 1.4f;
+    [SerializeField] private float rollSpeedUp = 1.6f;
+    [Tooltip("구르기 클립의 이 지점(0~1)을 지나면 조작을 돌려준다.\n" +
+             "일어서는 뒷부분은 애니메이션만 마저 블렌드되고 이동/회전/조준은 즉시 반응하므로,\n" +
+             "'구르고 원래 자세로 돌아오는' 답답함이 사라진다. 1이면 예전처럼 끝까지 잠근다.")]
+    [SerializeField, Range(0.4f, 1f)] private float rollControlReturn = 0.7f;
 
     [Header("중력/점프")]
     [SerializeField] private float gravity = -20f;
@@ -66,7 +70,8 @@ public class PlayerController : MonoBehaviour
     private float _verticalVelocity;
     private float _runHoldTimer; // 이동 중 Shift 유지 시간 누적
     private bool _moving;              // 이번 프레임 이동 여부(조준 보정 판단용)
-    private bool _rolling;             // 다이브 롤 재생 중(회전/조준 보정 잠금)
+    private bool _rolling;             // 다이브 롤 재생 중(무적 프레임 / 애니메이션 가속)
+    private bool _rollLocked;          // 롤 조작 잠금 구간(회복 구간에 들어서면 풀린다)
     private bool _isRunning;           // 질주 중(외부 참조용)
     private float _aimBlend;           // 조준 보정 블렌드(0~1)
     private float _poseGunYawOffset;   // 포즈상 총열이 몸 정면에서 틀어진 요 각(자동 측정)
@@ -138,6 +143,32 @@ public class PlayerController : MonoBehaviour
     {
         if (Keyboard.current == null) return;
 
+        // 컷신 중(카메라가 보스를 비추는 동안)과 사망 후에는 조작을 잠근다.
+        // 중력은 계속 적용해 공중에 뜬 채로 멈추지 않게 한다.
+        if (BossController.CutsceneActive || (_stats != null && _stats.IsDead))
+        {
+            _moving = false;
+            _isRunning = false;
+            if (_cc.isGrounded && _verticalVelocity < 0f) _verticalVelocity = -2f;
+            _verticalVelocity += gravity * Time.deltaTime;
+            _cc.Move(Vector3.up * _verticalVelocity * Time.deltaTime);
+
+            if (animator != null && animator.runtimeAnimatorController != null)
+            {
+                animator.SetFloat(SpeedHash, 0f, 0.1f, Time.deltaTime);
+
+                // 사망 중엔 상체 레이어(소총 파지)를 내려야 쓰러지는 모션이 상체까지 보인다 —
+                // 남겨두면 몸은 넘어가는데 상체만 총을 든 채 서 있는 자세가 된다.
+                if (_upperLayerIdx == -2) _upperLayerIdx = animator.GetLayerIndex("UpperBody");
+                if (_upperLayerIdx >= 0)
+                {
+                    float w = Mathf.MoveTowards(animator.GetLayerWeight(_upperLayerIdx), 0f, 6f * Time.deltaTime);
+                    animator.SetLayerWeight(_upperLayerIdx, w);
+                }
+            }
+            return;
+        }
+
         bool isAiming = tpsCamera != null && tpsCamera.IsAiming;
 
         // --- 입력 읽기 (New Input System) ---
@@ -157,12 +188,21 @@ public class PlayerController : MonoBehaviour
         bool moving = inputMag > 0.01f;
         _moving = moving;
 
-        // 다이브 롤 재생 중(전환 진입 포함) 여부 — 롤 동안엔 회전/조준 보정을 잠근다
+        // 다이브 롤 재생 중(전환 진입 포함) 여부.
+        // 회전/이동을 잠그는 구간(_rollLocked)은 롤의 앞부분뿐이고,
+        // 일어서는 뒷부분(rollControlReturn 이후)에서는 애니메이션만 마저 블렌드되고
+        // 조작은 바로 돌아온다 → 구르고 나서 굳어 있는 답답함이 사라진다.
         _rolling = false;
+        _rollLocked = false;
         if (animator != null && animator.runtimeAnimatorController != null)
         {
-            _rolling = animator.GetCurrentAnimatorStateInfo(0).IsName("Running Dive Roll")
-                    || animator.GetNextAnimatorStateInfo(0).IsName("Running Dive Roll");
+            var cur = animator.GetCurrentAnimatorStateInfo(0);
+            bool curRoll = cur.IsName("Running Dive Roll");
+            bool nextRoll = animator.GetNextAnimatorStateInfo(0).IsName("Running Dive Roll");
+
+            _rolling = curRoll || nextRoll;
+            bool recovering = curRoll && !nextRoll && cur.normalizedTime >= rollControlReturn;
+            _rollLocked = _rolling && !recovering;
         }
 
         // 달리기 판정: 반드시 Shift + 이동이어야 하고, Shift를 runHoldTime(기본 0=즉시) 이상 유지해야 달리기.
@@ -179,11 +219,11 @@ public class PlayerController : MonoBehaviour
         // 구르기 중엔 입력/달리기 속도를 무시하고 몸 전방으로 일정 속도만 이동.
         // (달리기 속도 그대로 미끄러져 롤이 끝나기 전에 과이동하는 문제 방지 —
         //  롤이 끝나면 키를 계속 누르고 있을 경우 자연히 달리기로 복귀한다)
-        if (_rolling)
+        if (_rollLocked)
             horizontal = transform.forward * (walkSpeed * rollSpeedMultiplier * rollSpeedUp);
 
         // --- 회전 ---
-        if (_rolling)
+        if (_rollLocked)
         {
             // 구르기 중엔 회전 잠금: 구르기 시작 방향 그대로 유지
         }
@@ -245,8 +285,8 @@ public class PlayerController : MonoBehaviour
                 // 발사 직후엔 이동 여부와 무관하게 상체 레이어를 켜야 발사 모션이 보인다
                 bool reloading = _shooter != null && _shooter.IsReloading;
                 bool firingRecently = _shooter != null && _shooter.FiredRecently;
-                float target = (!_rolling && (reloading || firingRecently || (!isRunning && moving))) ? 1f : 0f;
-                float w = Mathf.MoveTowards(animator.GetLayerWeight(_upperLayerIdx), target, 5f * Time.deltaTime);
+                float target = (!_rollLocked && (reloading || firingRecently || (!isRunning && moving))) ? 1f : 0f;
+                float w = Mathf.MoveTowards(animator.GetLayerWeight(_upperLayerIdx), target, 8f * Time.deltaTime);
                 animator.SetLayerWeight(_upperLayerIdx, w);
             }
         }
@@ -278,7 +318,8 @@ public class PlayerController : MonoBehaviour
     private void OnAnimatorIK(int layerIndex)
     {
         if (!lookAtAim || animator == null || animator.runtimeAnimatorController == null) return;
-        if (_rolling) return; // 구르기 중 머리 IK는 목이 꺾여 보임 → 끔
+        if (_rollLocked) return; // 구르기 중 머리 IK는 목이 꺾여 보임 → 끔(회복 구간부터 다시 켠다)
+        if (_stats != null && _stats.IsDead) return; // 쓰러진 채로 조준점을 쳐다보면 목이 꺾인다
 
         // 수직/수평 조준은 LateUpdate의 총열 보정이 담당 → LookAt은 머리 위주로만(자연스러운 시선)
         animator.SetLookAtWeight(1f, lookAtBodyWeight, 0.9f, 0f, 0.5f); // (전체, 몸, 머리, 눈, 제한)
@@ -296,14 +337,23 @@ public class PlayerController : MonoBehaviour
     {
         if (animator == null || animator.runtimeAnimatorController == null) return;
 
+        // 사망 중에는 어떤 보정도 걸지 않는다 — 쓰러진 몸에 접지 보정을 걸면 다리가 땅으로
+        // 끌려가고, 조준 보정을 걸면 시체의 가슴이 카메라를 따라 비틀린다.
+        if (_stats != null && _stats.IsDead)
+        {
+            _aimBlend = Mathf.MoveTowards(_aimBlend, 0f, aimBlendSpeed * Time.deltaTime);
+            return;
+        }
+
         ApplyFootGrounding();
 
         bool aiming = tpsCamera != null && tpsCamera.IsAiming;
-        bool wantAim = gunForwardAlign && !_rolling && (aiming || !_moving);
+        bool wantAim = gunForwardAlign && !_rollLocked && (aiming || !_moving);
         _aimBlend = Mathf.MoveTowards(_aimBlend, wantAim ? 1f : 0f, aimBlendSpeed * Time.deltaTime);
 
         // 구르기 중엔 몸이 뒤집혀 총열 측정값이 엉터리가 되므로 측정/보정 모두 건너뛴다
-        if (_rolling) return;
+        // (회복 구간에서는 이미 몸이 서 있으므로 바로 조준 보정을 재개한다)
+        if (_rollLocked) return;
 
         // --- 총열 방향 측정(총 메시 최장축, 부호는 매 프레임 캐릭터 전방 반구로) ---
         if (!TryGetBarrelDirection(out Vector3 barrelWorld)) return;

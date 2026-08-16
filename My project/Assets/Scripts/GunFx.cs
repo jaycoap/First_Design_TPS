@@ -21,7 +21,7 @@ public static class GunFx
     /// </summary>
     public static MuzzleFx BuildMuzzleFlash(Transform parent, float scale, Color color)
     {
-        Color hot = HotCore(color); // 중심부는 흰빛에 가깝게 → 과열된 에너지 느낌
+        Color hot = HotCore(color); // 중심부만 살짝 밝게 — 색은 그대로 유지된다
 
         // 코어: 총구에서 터지는 에너지 섬광
         ParticleSystem core = NewSystem("LaserMuzzleFX", parent, AdditiveMat);
@@ -42,7 +42,7 @@ public static class GunFx
         sMain.startColor = hot;
         SetCone(sparks, 12f, 0.015f * scale); // 레이저답게 좁은 원뿔
         Stretch(sparks, 8f);
-        FadeOut(sparks, Color.white, color);
+        FadeOut(sparks, hot, color);
 
         // 확산 링: 총구에서 옆으로 퍼지는 얇은 에너지 파문
         ParticleSystem ring = NewSystem("EnergyRing", core.transform, AdditiveMat);
@@ -100,7 +100,7 @@ public static class GunFx
         sMain.gravityModifier = scale * 0.15f; // 거의 무중력 — 파편이 아니라 에너지
         SetCone(sparks, 55f, 0.01f * scale);
         Stretch(sparks, 6f);
-        FadeOut(sparks, Color.white, color);
+        FadeOut(sparks, hot, color);
 
         // 충격 링: 표면을 따라 퍼지는 에너지 파문
         ParticleSystem ring = NewSystem("EnergyRing", flash.transform, AdditiveMat);
@@ -130,8 +130,16 @@ public static class GunFx
         return new ImpactFx(flash, sparks, ring, critical ? 2.2f : 1f, pulse);
     }
 
-    /// <summary>레이저 코어용: 채도를 낮춰 흰빛에 가깝게(과열된 중심부 표현).</summary>
-    private static Color HotCore(Color c) => Color.Lerp(c, Color.white, 0.65f);
+    /// <summary>
+    /// 코어용 밝은 색. 예전에는 흰빛에 가까워(0.65) 어떤 색으로 쏘든 이펙트가 하얗게 보였다 —
+    /// 밝기만 올리고 색은 유지하도록 낮춘다(보스는 보라, 플레이어는 하늘색으로 읽힌다).
+    /// </summary>
+    private static Color HotCore(Color c)
+    {
+        Color hot = Color.Lerp(c, Color.white, 0.2f);
+        hot.a = 0.7f; // 섬광·입자·링이 한 점에 겹치므로 알파를 낮춰 가산 누적을 막는다
+        return hot;
+    }
 
     /// <summary>트레이서용 가산 글로우 머티리얼.</summary>
     public static Material MakeTracerMaterial() => AdditiveMat;

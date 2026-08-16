@@ -480,6 +480,10 @@ MonoBehaviour:
   recoilRecoverySpeed: 9
   shakeScale: 0.35
   shakeFrequency: 22
+  cinematicDistance: 1.2
+  cinematicHeight: 0.45
+  cinematicOrbitSpeed: 14
+  cinematicBlendSpeed: 1.6
 --- !u!114 &330585549
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1540,6 +1544,10 @@ PrefabInstance:
       propertyPath: target
       value: 
       objectReference: {fileID: 839762385}
+    - target: {fileID: 5997300376641108817, guid: 3f2013c6838564444b6a37e6cf04e3e6, type: 3}
+      propertyPath: maxHealth
+      value: 1600
+      objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
@@ -2821,7 +2829,7 @@ PrefabInstance:
       objectReference: {fileID: 330585548}
     - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: aimMask.m_Bits
-      value: 1079
+      value: 4294967039
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []

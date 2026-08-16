@@ -26,8 +26,10 @@ public class PlayerShooter : MonoBehaviour
 
     [Header("탄약/재장전")]
     [SerializeField] private int magazineSize = 35;
-    [Tooltip("애니메이터의 Reload 상태가 없을 때 사용하는 대체 재장전 시간(초).\n상태가 있으면 애니메이션 길이를 그대로 따른다.")]
-    [SerializeField] private float reloadTime = 2.5f;
+    [Tooltip("재장전에 걸리는 시간(초). 재장전 모션의 재생 속도가 이 시간에 맞춰 자동으로 조절되므로\n" +
+             "값을 바꾸면 애니메이션도 같이 빨라지거나 느려진다.\n" +
+             "(애니메이터에 Reload 상태가 없는 구성에서는 이 값이 그대로 대기 시간이 된다)")]
+    [SerializeField] private float reloadTime = 1.5f;
     [Tooltip("조준(우클릭) 중일 때만 발사할지 여부")]
     [SerializeField] private bool requireAimToFire = true;
     [SerializeField] private LayerMask hitMask = ~0;
@@ -109,6 +111,15 @@ public class PlayerShooter : MonoBehaviour
     private int _upperLayerIdx = -2;                     // UpperBody 레이어(-2=미조회, -1=없음)
     private static readonly int FireHash = Animator.StringToHash("Fire");
     private static readonly int ReloadHash = Animator.StringToHash("Reload");
+    private static readonly int ReloadSpeedHash = Animator.StringToHash("ReloadSpeed");
+    private bool _reloadSpeedChecked, _hasReloadSpeedParam;
+
+    /// <summary>
+    /// PlayerAnimatorSetup이 재장전 모션 속도를 구울 때 기준으로 삼는 시간(초).
+    /// 런타임에는 reloadTime과의 비율만큼 ReloadSpeed 파라미터로 다시 보정하므로,
+    /// Inspector에서 reloadTime을 바꿔도 애니메이션이 항상 그 시간에 맞춰 끝난다.
+    /// </summary>
+    public const float BakedReloadDuration = 1.5f;
 
     /// <summary>현재 탄약 수(HUD 표시용).</summary>
     public int CurrentAmmo => _ammo;
@@ -190,7 +201,11 @@ public class PlayerShooter : MonoBehaviour
         // IsRolling은 롤에서 빠져나오는 블렌드가 끝날 때까지 true를 유지한다.
         bool rolling = _controller != null && _controller.IsRolling;
 
-        bool canFire = !TimeShiftController.DecisionActive // 시간 선택 모드 중엔 좌클릭이 '되감기'라 발사 금지
+        if (_stats == null) _stats = GetComponent<PlayerStats>();
+
+        bool canFire = !TimeShiftController.RewindActive   // 시간역행 역재생 중엔 조작이 잠긴다
+                       && !BossController.CutsceneActive   // 등장 컷신 중에도 잠근다
+                       && !(_stats != null && _stats.IsDead) // 사망 후 R은 재시작 전용이다
                        && !rolling
                        && !_reloading                      // 재장전 플래그가 살아 있는 동안
                        && !ReloadMotionPlaying()           // 플래그가 먼저 풀려도 모션이 끝날 때까지
@@ -201,8 +216,10 @@ public class PlayerShooter : MonoBehaviour
             Fire();
         }
 
-        // 수동 재장전(R). 자동 재장전은 탄 소진 시 Fire에서 발동
-        if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
+        // 수동 재장전(R). 자동 재장전은 탄 소진 시 Fire에서 발동.
+        // 사망 후에는 R이 '재시작'이므로 여기서는 받지 않는다(HudUI가 처리).
+        if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame
+            && !(_stats != null && _stats.IsDead))
             StartReload();
 
         UpdateReload();
@@ -401,6 +418,20 @@ public class PlayerShooter : MonoBehaviour
             || animator.GetNextAnimatorStateInfo(_upperLayerIdx).IsName("Reload");
     }
 
+    /// <summary>
+    /// 컨트롤러에 ReloadSpeed(재생 속도 배율) 파라미터가 있는가.
+    /// 애니메이터를 예전 구성 그대로 쓰고 있어도 오류 없이 넘어가도록 1회만 확인한다.
+    /// </summary>
+    private bool HasReloadSpeedParam()
+    {
+        if (_reloadSpeedChecked) return _hasReloadSpeedParam;
+        _reloadSpeedChecked = true;
+
+        foreach (var p in animator.parameters)
+            if (p.nameHash == ReloadSpeedHash) { _hasReloadSpeedParam = true; break; }
+        return _hasReloadSpeedParam;
+    }
+
     /// <summary>재장전 시작. UpperBody 레이어의 Reload 상태(모션)를 발동시킨다.</summary>
     private void StartReload()
     {
@@ -412,6 +443,11 @@ public class PlayerShooter : MonoBehaviour
         GameSfx.Play(Sfx.Reload);
         if (animator != null && animator.runtimeAnimatorController != null)
         {
+            // 재장전 모션이 reloadTime 안에 끝나도록 재생 속도를 맞춘다
+            // (컨트롤러는 BakedReloadDuration 기준으로 구워져 있으므로 그 비율만 넘긴다)
+            if (HasReloadSpeedParam())
+                animator.SetFloat(ReloadSpeedHash, BakedReloadDuration / Mathf.Max(0.05f, reloadTime));
+
             // 마지막 발에서 자동 재장전이 걸리면 소비되지 않은 Fire 트리거가 남아 있다.
             // 그대로 두면 재장전이 끝나는 순간 입력도 없이 발사 모션이 한 번 튄다.
             animator.ResetTrigger(FireHash);

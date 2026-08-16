@@ -66,6 +66,13 @@ public class PlayerTimeGhost : MonoBehaviour
     /// <summary>고스트의 총 Transform(지원 사격 발사 원점).</summary>
     public Transform GhostGun { get; private set; }
 
+    /// <summary>
+    /// 고스트 몸이 향한 방향(월드). 총열의 앞뒤를 판별하는 기준으로 쓴다 —
+    /// 총은 항상 몸 앞쪽에 들려 있으므로, 목표 방향이 아니라 이 값을 기준 삼아야
+    /// "지금 총이 실제로 어디를 향하는가"를 왜곡 없이 잴 수 있다.
+    /// </summary>
+    public Vector3 GhostForward => _ghost != null ? _ghost.transform.forward : transform.forward;
+
     /// <summary>고스트가 보여주는 과거 시점(초). TimeShiftController가 월드 역행 범위로 사용.</summary>
     public float Delay => delay;
 

@@ -120,7 +120,31 @@ public class PlayerStats : MonoBehaviour, IDamageable
 
         _health = Mathf.Max(0f, _health - amount);
         GameSfx.Play(Sfx.PlayerHurt); // 회피(구르기)로 흘렸을 때는 위에서 이미 빠져나갔다
-        if (IsDead)
-            Debug.Log("[PlayerStats] 플레이어 사망 — 사망 연출/리스폰은 추후 구현 지점.");
+        if (IsDead) Die();
     }
+
+    /// <summary>사망 처리: 쓰러지는 모션을 재생하고 게임 오버 화면 타이밍을 기록한다.</summary>
+    private void Die()
+    {
+        DeathTime = Time.unscaledTime;
+
+        var animator = GetComponentInChildren<Animator>();
+        if (animator != null && animator.runtimeAnimatorController != null)
+        {
+            // 남아 있던 다른 트리거가 사망 모션 직후에 튀지 않도록 먼저 비운다
+            animator.ResetTrigger("Fire");
+            animator.ResetTrigger("Reload");
+            animator.ResetTrigger("Roll");
+            animator.SetFloat("Speed", 0f);
+            animator.SetBool("IsRunning", false);
+            animator.SetBool("IsAiming", false);
+            animator.speed = 1f; // 구르기 가속(rollSpeedUp)이 걸린 채로 죽었을 수 있다
+            animator.SetTrigger("Die");
+        }
+
+        Debug.Log("[PlayerStats] 플레이어 사망 — 쓰러지는 모션 재생, HudUI가 게임 오버 화면을 띄운다(R로 재시작).");
+    }
+
+    /// <summary>사망한 시각(Time.unscaledTime). HudUI가 게임 오버 화면을 서서히 띄우는 데 쓴다.</summary>
+    public float DeathTime { get; private set; }
 }

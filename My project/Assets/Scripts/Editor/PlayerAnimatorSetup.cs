@@ -34,8 +34,14 @@ public static class PlayerAnimatorSetup
     private const string RollFbx = AnimDir + "Running Dive Roll.fbx";   // 다이브 롤(C)
     private const string ReloadFbx = AnimDir + "Reloading.fbx";          // 재장전(상체 레이어)
     private const string FireFbx = AnimDir + "Aiming Firing Rifle.fbx";  // 발사(상체 레이어)
+    private const string DieFbx = AnimDir + "Dying.fbx";                 // 사망(1회 재생 후 정지)
 
     private const float MoveThreshold = 0.1f; // Speed 이동 판정 임계값
+
+    // 재장전 상태에서 빠져나가는 지점과 복귀 블렌드 길이.
+    // PlayerShooter.BakedReloadDuration(재장전 총 소요 시간)을 이 둘로 나눠 재생 속도를 굽는다.
+    private const float ReloadExitTime = 0.95f;
+    private const float ReloadExitBlend = 0.1f;
 
     [MenuItem("Tools/TPS/Build Player Animator")]
     public static void BuildMenu()
@@ -64,6 +70,7 @@ public static class PlayerAnimatorSetup
             EnsureHumanoidClip(RollFbx, loop: false, bakeYToFeet: true);     // 다이브 롤 = 1회
             EnsureHumanoidClip(ReloadFbx, loop: false, bakeYToFeet: true);   // 재장전 = 1회(상체 전용)
             EnsureHumanoidClip(FireFbx, loop: false, bakeYToFeet: true);     // 발사 = 1회(상체 전용)
+            EnsureHumanoidClip(DieFbx, loop: false, bakeYToFeet: true);      // 사망 = 1회(끝 자세로 정지)
 
             // 2) 클립 로드
             AnimationClip idleClip = LoadClip(IdleFbx);
@@ -73,6 +80,7 @@ public static class PlayerAnimatorSetup
             AnimationClip rollClip = LoadClip(RollFbx);
             AnimationClip reloadClip = LoadClip(ReloadFbx);
             AnimationClip fireClip = LoadClip(FireFbx);
+            AnimationClip dieClip = LoadClip(DieFbx);
             if (walkClip == null || startRunClip == null || runClip == null)
             {
                 Debug.LogError("[TPS-Anim] Walk Forward / Idle To Running / Rifle Run 클립을 로드하지 못했습니다.");
@@ -96,6 +104,15 @@ public static class PlayerAnimatorSetup
             controller.AddParameter("Roll", AnimatorControllerParameterType.Trigger);
             controller.AddParameter("Fire", AnimatorControllerParameterType.Trigger); // PlayerShooter가 발사 시 호출(경고 방지)
             controller.AddParameter("Reload", AnimatorControllerParameterType.Trigger); // PlayerShooter가 재장전 시 호출
+            controller.AddParameter("Die", AnimatorControllerParameterType.Trigger);    // PlayerStats가 사망 시 호출
+            // 재장전 모션 재생 속도 배율. 기본 1(= 구워둔 속도 그대로)이어야 하므로
+            // defaultFloat를 명시한다 — AddParameter(name, type)은 기본값이 0이라 모션이 멈춘다.
+            controller.AddParameter(new AnimatorControllerParameter
+            {
+                name = "ReloadSpeed",
+                type = AnimatorControllerParameterType.Float,
+                defaultFloat = 1f
+            });
 
             // 루트 스테이트머신 상태 초기화
             var sm = controller.layers[0].stateMachine;
@@ -124,6 +141,26 @@ public static class PlayerAnimatorSetup
             run.iKOnFeet = true;
 
             sm.defaultState = idle;
+
+            // 사망: 어떤 상태에서 죽든 재생돼야 하므로 AnyState에서 건다.
+            // 루프를 끄고 나가는 전환을 만들지 않았으므로 마지막 프레임(쓰러진 자세)에서 멈춘다.
+            if (dieClip != null)
+            {
+                var die = sm.AddState("Dying", new Vector3(280, 300, 0));
+                die.motion = dieClip;
+                die.iKOnFeet = false; // 쓰러진 몸에 발 IK를 걸면 다리가 땅으로 끌려간다
+
+                var tDie = sm.AddAnyStateTransition(die);
+                tDie.hasExitTime = false;
+                tDie.hasFixedDuration = true;
+                tDie.duration = 0.12f;
+                tDie.canTransitionToSelf = false; // 이미 쓰러졌는데 다시 처음부터 재생되지 않게
+                tDie.AddCondition(AnimatorConditionMode.If, 0f, "Die");
+            }
+            else
+            {
+                Debug.LogWarning("[TPS-Anim] Dying.fbx 클립을 로드하지 못해 사망 모션을 건너뜁니다.");
+            }
 
             // 5) 트랜지션
             // Idle → Idle To Running : 정지 상태에서 바로 달리기(Shift+이동)로 출발
@@ -200,16 +237,38 @@ public static class PlayerAnimatorSetup
                 var tRoll = run.AddTransition(roll);
                 tRoll.hasExitTime = false;
                 tRoll.hasFixedDuration = true;
-                tRoll.duration = 0.08f;
+                tRoll.duration = 0.06f;
                 tRoll.AddCondition(AnimatorConditionMode.If, 0f, "Roll");
 
-                // Running Dive Roll → Rifle Run : 롤이 끝나면 달리기로 복귀
-                // (달리기 해제/정지 상태면 Rifle Run의 기존 전환이 Walk/Idle로 이어받음)
-                var tRollEnd = roll.AddTransition(run);
-                tRollEnd.hasExitTime = true;
-                tRollEnd.exitTime = 0.85f;
-                tRollEnd.hasFixedDuration = true;
-                tRollEnd.duration = 0.15f;
+                // 롤 복귀: 일어서는 뒷부분(RollExitTime 이후)에서 곧바로 현재 이동 상태로 빠져나간다.
+                // 예전처럼 Rifle Run만 거치면 "롤 꼬리 → Rifle Run(0.15) → Walk/Idle(0.20)"로
+                // 블렌드가 두 번 겹쳐 원래 자세로 돌아오는 데 반 박자가 더 걸렸다.
+                // Run/Walk/Idle 세 갈래를 직접 열어 한 번의 짧은 블렌드로 끝낸다.
+                const float RollExitTime = 0.72f;
+                const float RollExitBlend = 0.09f;
+
+                // → Rifle Run : Shift를 계속 누르고 있으면 달리기로 이어 달린다
+                var tRollRun = roll.AddTransition(run);
+                tRollRun.hasExitTime = true;
+                tRollRun.exitTime = RollExitTime;
+                tRollRun.hasFixedDuration = true;
+                tRollRun.duration = RollExitBlend;
+                tRollRun.AddCondition(AnimatorConditionMode.If, 0f, "IsRunning");
+
+                // → Walk : Shift를 뗀 채 이동 중이면 걷기로
+                var tRollWalk = roll.AddTransition(walk);
+                tRollWalk.hasExitTime = true;
+                tRollWalk.exitTime = RollExitTime;
+                tRollWalk.hasFixedDuration = true;
+                tRollWalk.duration = RollExitBlend;
+                tRollWalk.AddCondition(AnimatorConditionMode.Greater, MoveThreshold, "Speed");
+
+                // → Idle : 입력을 놓았으면 바로 대기 자세로(사격/조준 즉시 가능)
+                var tRollIdle = roll.AddTransition(idle);
+                tRollIdle.hasExitTime = true;
+                tRollIdle.exitTime = RollExitTime;
+                tRollIdle.hasFixedDuration = true;
+                tRollIdle.duration = RollExitBlend;
             }
             else
             {
@@ -236,19 +295,29 @@ public static class PlayerAnimatorSetup
                     reload.motion = reloadClip;
                     reloadState = reload;
 
+                    // 재장전에 걸리는 시간을 PlayerShooter.BakedReloadDuration(1.5초)에 맞춘다.
+                    // 잠금이 풀리는 시점은 '모션이 exitTime에 도달 + 복귀 블렌드 완료'이므로,
+                    // 그 합이 정확히 목표 시간이 되도록 상태 재생 속도를 굽는다.
+                    float stateTime = Mathf.Max(0.1f, PlayerShooter.BakedReloadDuration - ReloadExitBlend);
+                    if (reloadClip.length > 0.01f)
+                        reload.speed = reloadClip.length * ReloadExitTime / stateTime;
+                    // 런타임에서 reloadTime을 바꾸면 이 배율로 다시 조절된다(PlayerShooter가 세팅)
+                    reload.speedParameterActive = true;
+                    reload.speedParameter = "ReloadSpeed";
+
                     // Rifle Hold → Reload : Reload 트리거(PlayerShooter가 발동)
                     var tReload = hold.AddTransition(reload);
                     tReload.hasExitTime = false;
                     tReload.hasFixedDuration = true;
-                    tReload.duration = 0.1f;
+                    tReload.duration = 0.08f;
                     tReload.AddCondition(AnimatorConditionMode.If, 0f, "Reload");
 
                     // Reload → Rifle Hold : 모션이 끝나면 복귀
                     var tReloadEnd = reload.AddTransition(hold);
                     tReloadEnd.hasExitTime = true;
-                    tReloadEnd.exitTime = 0.95f;
+                    tReloadEnd.exitTime = ReloadExitTime;
                     tReloadEnd.hasFixedDuration = true;
-                    tReloadEnd.duration = 0.15f;
+                    tReloadEnd.duration = ReloadExitBlend;
                 }
                 else
                 {

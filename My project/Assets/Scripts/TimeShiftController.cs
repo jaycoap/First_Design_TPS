@@ -1,32 +1,31 @@
 using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
-using UnityEngine.UI;
 
 /// <summary>
-/// 시간 능력 컨트롤러(타임포스 소모).
-/// - G(협공): 전투 중 언제든 즉시 발동. 크로스헤어가 겨누고 있는 그 대상만 과거의 나가 함께 쏜다.
+/// 시간 능력 컨트롤러(타임포스 소모). 두 능력 모두 별도 선택 창 없이 키 한 번으로 즉시 발동한다.
+/// - T(시간역행): 지나온 길을 거꾸로 되감기며 5초 전 상태(위치·자세·체력·탄약)로 돌아간다.
+///   월드의 TimeRewindable(보스 패턴 등)도 함께 역재생된다. 쿨다운 10초.
+/// - G(협공): 크로스헤어가 겨누고 있는 그 대상만 과거의 나가 함께 쏜다. 쿨다운 8초.
 ///   적을 스스로 찾아다니지 않으므로, 여러 적 중 '어느 놈을 칠지'는 전적으로 플레이어의 조준이 정한다.
-/// - T: 슬로우 모션 + 선택 모드 진입(고스트가 준비되고 타임포스가 충분할 때)
-///   - 좌클릭: 5초 전 위치로 되감기(텔레포트). 히스토리 초기화 → 고스트가 다시 차오를 때까지 자연 쿨다운
-///   - 우클릭: 협공(G와 동일 — 겨누고 있는 대상)
-///   - T 재입력 / 시간 초과: 취소(타임포스 소모 없음)
-/// 선택 모드 동안 일반 발사/조준 입력은 잠긴다(PlayerShooter/ThirdPersonCamera가 DecisionActive 확인).
-/// 협공(G)은 선택 모드를 거치지 않으므로 사격 중에도 끊김 없이 쓸 수 있다.
+///
+/// 사용 가능 여부와 남은 쿨다운은 HudUI가 좌하단 슬롯에 표시하고,
+/// 발동에 실패하면 그 이유를 토스트로 알린다(LastDenyReason).
 /// </summary>
 [RequireComponent(typeof(PlayerTimeGhost))]
 public class TimeShiftController : MonoBehaviour
 {
-    [Header("슬로우/선택")]
-    [SerializeField] private float slowTimeScale = 0.2f;
-    [Tooltip("선택 제한 시간(실시간 초). 초과 시 취소")]
-    [SerializeField] private float decisionTimeout = 4f;
-
     [Header("타임포스 비용")]
-    [Tooltip("좌클릭(시간역행) 비용")]
+    [Tooltip("시간역행(T) 비용")]
     [SerializeField] private float rewindCost = 30f;
-    [Tooltip("우클릭(시간공명) 비용")]
+    [Tooltip("협공(G) 비용")]
     [SerializeField] private float supportCost = 30f;
+
+    [Header("쿨다운")]
+    [Tooltip("시간역행(T) 재사용 대기(초). 발동한 순간부터 잰다.")]
+    [SerializeField] private float rewindCooldown = 10f;
+    [Tooltip("협공(G) 재사용 대기(초). 발동한 순간부터 재므로 사격 시간(Support Duration)도 이 안에 포함된다.")]
+    [SerializeField] private float supportCooldown = 8f;
 
     [Header("시간역행 연출")]
     [Tooltip("과거로 되감기는 모습이 보이는 시간(초). 플레이어와 월드(TimeRewindable)가 함께 역재생된다.\n길수록 잔상이 길게 늘어져 연출이 극적이다.")]
@@ -46,10 +45,7 @@ public class TimeShiftController : MonoBehaviour
              "0이면 예전처럼 무조건 명중.")]
     [SerializeField] private float ghostSpreadScale = 1.5f;
 
-    /// <summary>선택 모드 중인가(전역). PlayerShooter/카메라가 참조해 입력 충돌을 막는다.</summary>
-    public static bool DecisionActive { get; private set; }
-
-    /// <summary>시간역행 역재생 중인가(전역). 재생 동안 조준 등 입력을 잠근다.</summary>
+    /// <summary>시간역행 역재생 중인가(전역). 재생 동안 조준/발사 등 입력을 잠근다.</summary>
     public static bool RewindActive { get; private set; }
 
     /// <summary>
@@ -87,10 +83,26 @@ public class TimeShiftController : MonoBehaviour
         ? Mathf.Clamp01((_supportEndTime - Time.time) / supportDuration)
         : 0f;
 
+    /// <summary>시간역행 쿨다운 진행도 0→1(1 = 대기 완료).</summary>
+    public float RewindCooldown01 => Progress01(_nextRewindTime, rewindCooldown);
+    /// <summary>시간역행 남은 쿨다운(초). 0이면 대기 완료.</summary>
+    public float RewindRemain => Mathf.Max(0f, _nextRewindTime - Time.time);
+    /// <summary>협공 쿨다운 진행도 0→1(1 = 대기 완료).</summary>
+    public float SupportCooldown01 => Progress01(_nextSupportTime, supportCooldown);
+    /// <summary>협공 남은 쿨다운(초). 0이면 대기 완료.</summary>
+    public float SupportRemain => Mathf.Max(0f, _nextSupportTime - Time.time);
+
+    private static float Progress01(float readyTime, float cooldown)
+        => cooldown <= 0.01f ? 1f : Mathf.Clamp01(1f - (readyTime - Time.time) / cooldown);
+
+    private Transform _supportTarget; // 협공이 겨누고 있는 대상(매 프레임 조준 갱신용)
     private float _supportEndTime;
+    private float _nextRewindTime;    // 이 시각 이후 시간역행 재사용 가능
+    private float _nextSupportTime;   // 이 시각 이후 협공 재사용 가능
     private string _msgRecharge = "과거의 나 재충전 중";
     private string _msgNoTarget = "겨누는 대상이 없다";
     private string _msgNoForce = "타임포스 부족";
+    private string _msgCooldown = "재사용 대기";
 
     /// <summary>발동 실패 사유 기록(HUD가 1.6초간 표시).</summary>
     private void Deny(string reason)
@@ -103,6 +115,21 @@ public class TimeShiftController : MonoBehaviour
     public static void CancelSupport()
     {
         if (_instance != null) _instance.StopSupport();
+    }
+
+    /// <summary>
+    /// 씬을 다시 불러오기 전에 전역 상태를 초기화한다.
+    /// 이 값들은 static이라 씬 로드를 넘어 그대로 남는다 — 예컨대 시간역행 도중에 죽으면
+    /// RewindActive가 true인 채로 새 씬이 시작돼 조준·발사가 영영 잠긴다.
+    /// </summary>
+    public static void ResetGlobalState()
+    {
+        RewindActive = false;
+        SupportActive = false;
+        GhostDamageActive = false;
+        SupportSession = 0;
+        LastDenyReason = null;
+        LastDenyTime = 0f;
     }
 
     private static TimeShiftController _instance;
@@ -135,12 +162,6 @@ public class TimeShiftController : MonoBehaviour
     /// <summary>반동 회복 속도 = 초당 누적량 × 이 값(1보다 작으므로 연사하면 서서히 밀려 올라간다).</summary>
     private const float GhostRecoilRecovery = 0.7f;
 
-    // 선택 UI(코드 생성 uGUI)
-    private GameObject _panel;
-    private Image _timeoutBar;
-    private CanvasGroup _rewindCard;
-    private CanvasGroup _supportCard;
-    private Font _uiFont;
 
     private void Awake()
     {
@@ -166,7 +187,7 @@ public class TimeShiftController : MonoBehaviour
         // 고스트는 플레이어와 구분되는 보라빛 레이저
         _ghostMuzzleFx = GunFx.BuildMuzzleFlash(transform, _fxScale, ghostLaserColor);
         _ghostImpactFx = GunFx.BuildImpact(_fxScale, ghostLaserColor);
-        BuildDecisionUI();
+        LocalizeMessages();
     }
 
     private void OnDestroy()
@@ -177,7 +198,6 @@ public class TimeShiftController : MonoBehaviour
 
     private void OnDisable()
     {
-        if (DecisionActive) EndDecision();
         StopSupport();
         if (_instance == this) _instance = null;
     }
@@ -193,6 +213,7 @@ public class TimeShiftController : MonoBehaviour
 
         StopCoroutine(_support);
         _support = null;
+        _supportTarget = null;
         SupportActive = false;
         _ghost.SetGhostAnimating(false);
         _ghost.SetFrozen(false);
@@ -203,61 +224,53 @@ public class TimeShiftController : MonoBehaviour
         if (_tracer != null && _tracer.enabled && Time.unscaledTime >= _tracerHide)
             _tracer.enabled = false;
 
-        if (_support != null) RecoverGhostAim(); // 협공 중 고스트의 반동/퍼짐 회복
-
-        if (Keyboard.current == null || Mouse.current == null) return;
-
-        if (!DecisionActive)
+        if (_support != null)
         {
-            // 협공(G): 선택 모드를 거치지 않고 사격 중에도 즉시 발동
-            if (Keyboard.current[supportKey].wasPressedThisFrame)
-                TryStartSupport();
+            RecoverGhostAim(); // 협공 중 고스트의 반동/퍼짐 회복
 
-            // 조건이 안 맞으면 왜 안 되는지 알려 준다(예전에는 아무 반응이 없었다)
-            if (Keyboard.current.tKey.wasPressedThisFrame && _support == null && !RewindActive)
-            {
-                if (!_ghost.GhostReady) Deny(_msgRecharge);
-                else if (!HasForce(Mathf.Min(rewindCost, supportCost))) Deny(_msgNoForce);
-                else BeginDecision();
-            }
-            return;
+            // 조준은 매 프레임 갱신한다 — 발사할 때만 돌리면(초당 8회) 목표가 움직일 때
+            // 몸이 뚝뚝 끊겨 돌아가고, 발사 사이에는 엉뚱한 데를 보고 서 있게 된다.
+            if (_supportTarget != null && _supportTarget.gameObject.activeInHierarchy)
+                AimGhostAtTarget(AimPointOf(_supportTarget));
         }
 
-        // --- 선택 모드 ---
-        UpdateDecisionUI();
-        if (Mouse.current.leftButton.wasPressedThisFrame && TryUseForce(rewindCost)) { DoRewind(); return; }
-        if (Mouse.current.rightButton.wasPressedThisFrame) { EndDecision(); TryStartSupport(); return; }
-        if (Keyboard.current.tKey.wasPressedThisFrame || Time.realtimeSinceStartup >= _decisionEndRealtime)
-            EndDecision();
+        // 컷신 중·사망 후에는 시간 능력도 잠근다(사망 후 R은 재시작 전용)
+        // 컷신 중과 사망 후에는 시간 능력을 잠근다(사망 후 R은 재시작 전용이다)
+        if (Keyboard.current == null || BossController.CutsceneActive) return;
+        if (_stats != null && _stats.IsDead) return;
+        if (_stats != null && _stats.IsDead) return;
+
+        // 협공(G): 사격 중에도 끊김 없이 즉시 발동
+        if (Keyboard.current[supportKey].wasPressedThisFrame)
+            TryStartSupport();
+
+        // 시간역행(T): 선택 창 없이 곧바로 발동
+        if (Keyboard.current.tKey.wasPressedThisFrame)
+            TryRewind();
     }
 
     private bool HasForce(float amount) => _stats == null || _stats.TimeForce >= amount;
     private bool TryUseForce(float amount) => _stats == null || _stats.TryUseTimeForce(amount);
 
-    private void BeginDecision()
+    /// <summary>
+    /// T 입력 처리: 조건이 맞으면 즉시 시간역행. 안 되면 왜 안 되는지 토스트로 알린다.
+    /// </summary>
+    private void TryRewind()
     {
-        DecisionActive = true;
-        Time.timeScale = slowTimeScale;
-        Time.fixedDeltaTime = 0.02f * slowTimeScale;
-        _decisionEndRealtime = Time.realtimeSinceStartup + decisionTimeout;
-        if (_panel != null) _panel.SetActive(true);
-        UpdateDecisionUI();
+        if (RewindActive || _support != null) return;
+        if (RewindRemain > 0.01f) { Deny($"{_msgCooldown} {RewindRemain:0.0}s"); return; }
+        if (!_ghost.GhostReady) { Deny(_msgRecharge); return; }
+        if (!TryUseForce(rewindCost)) { Deny(_msgNoForce); return; }
+
+        _nextRewindTime = Time.time + rewindCooldown;
+        DoRewind();
     }
 
-    private void EndDecision()
-    {
-        DecisionActive = false;
-        Time.timeScale = 1f;
-        Time.fixedDeltaTime = 0.02f;
-        if (_panel != null) _panel.SetActive(false);
-    }
-
-    /// <summary>좌클릭(시간역행): 지나온 길을 거꾸로 되감기며 5초 전 상태로 — 월드도 함께 역행.</summary>
+    /// <summary>시간역행: 지나온 길을 거꾸로 되감기며 5초 전 상태로 — 월드도 함께 역행.</summary>
     private void DoRewind()
     {
         // 시간역행: 텔레포트가 아니라 지나온 길을 거꾸로 되감기며 5초 전 상태
         // (위치·자세·체력·탄약)로 돌아간다. 월드의 TimeRewindable(보스/적)도 함께 역재생.
-        EndDecision();
         if (RewindActive) return;
 
         _ghostImpactFx.Spawn(transform.position + Vector3.up * (_fxScale * 0.9f), Vector3.up); // 발동 이펙트
@@ -275,7 +288,6 @@ public class TimeShiftController : MonoBehaviour
         });
         if (!started) return;
 
-        GameSfx.Play(Sfx.TimeRewind);
         RewindActive = true;
         if (_tpsCam != null)
         {
@@ -294,12 +306,14 @@ public class TimeShiftController : MonoBehaviour
     private void TryStartSupport()
     {
         if (_support != null || RewindActive) return;   // 이미 쓰는 중 — 알릴 것도 없다
+        if (SupportRemain > 0.01f) { Deny($"{_msgCooldown} {SupportRemain:0.0}s"); return; }
         if (!_ghost.GhostReady) { Deny(_msgRecharge); return; }
 
         Transform target = FindAimedTarget();
         if (target == null) { Deny(_msgNoTarget); return; }   // 허공을 겨눈 협공은 발동하지 않는다
         if (!TryUseForce(supportCost)) { Deny(_msgNoForce); return; }
 
+        _nextSupportTime = Time.time + supportCooldown;
         SupportSession++;
         SupportActive = true;
         GameSfx.Play(Sfx.TimeSupport);
@@ -309,9 +323,13 @@ public class TimeShiftController : MonoBehaviour
     /// <summary>고스트를 그 자리에 고정하고, 지정한 대상만 계속 쏜다.</summary>
     private IEnumerator SupportFireRoutine(Transform target)
     {
+        _supportTarget = target;        // Update가 매 프레임 이 대상을 겨눈다
         _ghost.SetFrozen(true);
         _ghost.SetGhostAnimating(true); // 과거 자세와 무관하게 총을 겨눈 모습으로
         ResetGhostAim();                // 반동/퍼짐은 세션마다 처음부터 쌓인다
+
+        // 발사 전에 먼저 몸을 돌려 둔다 — 첫 발이 등을 진 채로 나가지 않도록
+        AimGhostAtTarget(AimPointOf(target));
 
         float end = Time.time + supportDuration;
         _supportEndTime = end;          // HUD 진행 바
@@ -338,6 +356,7 @@ public class TimeShiftController : MonoBehaviour
         _ghost.SetFrozen(false);
         _ghost.ClearHistory();
         _support = null;
+        _supportTarget = null;
         SupportActive = false;
     }
 
@@ -362,7 +381,12 @@ public class TimeShiftController : MonoBehaviour
     /// 고스트가 목표를 '겨누는' 자세가 되도록 수평 회전시킨다.
     /// 루트를 목표로 바로 돌리면 얼어붙은 포즈가 비스듬해서 몸이 딴 데를 보게 되므로,
     /// 총열 방향이 목표를 향하도록 그 차이만큼만 돌린다(플레이어의 조준 정렬과 같은 방식).
-    /// 회전하면 총 위치도 함께 움직이므로 두 번 반복해 수렴시킨다.
+    /// 회전하면 총 위치도 함께 움직이므로 몇 번 반복해 수렴시킨다.
+    ///
+    /// 총열의 앞뒤 기준(forwardRef)은 반드시 <b>고스트 자신의 정면</b>이어야 한다.
+    /// 목표 방향을 기준으로 주면 TryResolveMuzzle이 총열을 목표 쪽 반구로 뒤집어 버려서,
+    /// 실제로 등을 돌리고 있어도 "거의 다 겨눴다"고 계산된다(회전각이 ±90°를 못 넘는다).
+    /// 과거의 나가 엉뚱한 데를 보면서 쏘던 원인이 이것이다.
     /// </summary>
     private void AimGhostAtTarget(Vector3 aim)
     {
@@ -373,9 +397,9 @@ public class TimeShiftController : MonoBehaviour
             return;
         }
 
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < 3; i++)
         {
-            if (!_shooter.TryResolveMuzzle(gun, aim - gun.position, out Vector3 tip, out Vector3 barrel))
+            if (!_shooter.TryResolveMuzzle(gun, _ghost.GhostForward, out Vector3 tip, out Vector3 barrel))
             {
                 _ghost.AimGhostAt(aim);
                 return;
@@ -417,9 +441,11 @@ public class TimeShiftController : MonoBehaviour
         }
 
         // 발사 원점 = 고스트 총의 총구 끝(플레이어와 동일한 계산).
+        // 앞뒤 기준은 조준 정렬과 마찬가지로 고스트 자신의 정면이어야 한다 —
+        // 목표 방향을 주면 총이 등을 지고 있을 때 개머리판 쪽이 '총구'로 잡힌다.
         // 못 구하면 총 오브젝트 원점(그립)으로 폴백.
         Vector3 origin = gun.position;
-        if (_shooter != null && _shooter.TryResolveMuzzle(gun, aim - gun.position, out Vector3 tip, out _))
+        if (_shooter != null && _shooter.TryResolveMuzzle(gun, _ghost.GhostForward, out Vector3 tip, out _))
             origin = tip;
 
         // 겨눈 방향에 반동과 탄 퍼짐을 얹는다 — 빗나가면 그대로 빗나간다.
@@ -557,176 +583,20 @@ public class TimeShiftController : MonoBehaviour
         return lr;
     }
 
-    // ---------- 선택 UI(코드 생성 uGUI) ----------
-    // 내장 폰트에 한글 글리프가 없어 OS 폰트(맑은 고딕)를 동적 로드한다. 실패 시 영문 폴백.
-
-    private void BuildDecisionUI()
+    /// <summary>
+    /// 발동 실패 토스트 문구를 준비한다(HudUI가 이 문자열을 그대로 띄운다).
+    /// 내장 폰트에 한글 글리프가 없으므로, OS 폰트(맑은 고딕)를 쓸 수 있을 때만 한글로 쓴다.
+    /// </summary>
+    private void LocalizeMessages()
     {
-        bool korean = true;
-        try { _uiFont = Font.CreateDynamicFontFromOSFont("Malgun Gothic", 20); }
-        catch { _uiFont = null; }
-        if (_uiFont == null)
-        {
-            _uiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            korean = false; // 내장 폰트는 한글 미지원 → 영문 표기
-        }
+        bool korean;
+        try { korean = Font.CreateDynamicFontFromOSFont("Malgun Gothic", 20) != null; }
+        catch { korean = false; }
 
-        // 발동 실패 토스트 문구(HudUI가 같은 폰트 사정을 공유한다)
         _msgRecharge = korean ? "과거의 나 재충전 중" : "PAST SELF RECHARGING";
         _msgNoTarget = korean ? "겨누는 대상이 없다" : "NO TARGET";
         _msgNoForce = korean ? $"타임포스 부족 — {supportCost:0} 필요"
                              : $"NOT ENOUGH TIME FORCE ({supportCost:0})";
-
-        var canvasGO = new GameObject("TimeShiftUI");
-        canvasGO.transform.SetParent(transform, false);
-        var canvas = canvasGO.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = 10; // HUD 위에 표시
-        var scaler = canvasGO.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920f, 1080f);
-        scaler.matchWidthOrHeight = 0.5f;
-
-        // 어두운 오버레이(슬로우 모션 분위기)
-        var dim = MakeImage(canvasGO.transform, "Dim", new Color(0.02f, 0.06f, 0.12f, 0.45f));
-        Stretch(dim.rectTransform);
-
-        // 타이틀 + 제한시간 바
-        var title = MakeText(canvasGO.transform, "Title", 42, FontStyle.Bold, TextAnchor.MiddleCenter);
-        title.text = "TIME SHIFT";
-        title.color = new Color(0.7f, 0.95f, 1f);
-        Place(title.rectTransform, new Vector2(0.5f, 0.8f), new Vector2(600f, 60f));
-
-        var barBg = MakeImage(canvasGO.transform, "TimeoutBg", new Color(0f, 0f, 0f, 0.55f));
-        Place(barBg.rectTransform, new Vector2(0.5f, 0.75f), new Vector2(320f, 8f));
-        _timeoutBar = MakeImage(barBg.transform, "Fill", new Color(0.5f, 0.9f, 1f, 0.9f));
-        Stretch(_timeoutBar.rectTransform);
-        _timeoutBar.rectTransform.pivot = new Vector2(0f, 0.5f); // 좌측 기준으로 줄어듦(scale.x)
-
-        // 선택 카드 2장(크로스헤어 아래, 좌/우): 시간역행 / 시간공명
-        _rewindCard = MakeCard(canvasGO.transform, -230f, new Color(0.35f, 0.8f, 1f),
-            korean ? "좌클릭" : "LMB",
-            korean ? "시간역행" : "TIME REVERSE",
-            korean ? $"5초 전의 나로 돌아간다  ·  TF {rewindCost:0}" : $"Return to 5s ago  ·  TF {rewindCost:0}");
-        _supportCard = MakeCard(canvasGO.transform, 230f, new Color(1f, 0.65f, 0.3f),
-            korean ? $"우클릭 / {supportKey}" : $"RMB / {supportKey}",
-            korean ? "협공" : "CO-ATTACK",
-            korean ? $"겨누는 대상을 과거의 나와 함께 사격  ·  TF {supportCost:0}"
-                   : $"Past self fires at your target  ·  TF {supportCost:0}");
-
-        // 취소 힌트
-        var cancel = MakeText(canvasGO.transform, "Cancel", 20, FontStyle.Normal, TextAnchor.MiddleCenter);
-        cancel.text = korean ? "T  취소" : "T  CANCEL";
-        cancel.color = new Color(1f, 1f, 1f, 0.6f);
-        Place(cancel.rectTransform, new Vector2(0.5f, 0.27f), new Vector2(300f, 30f));
-
-        _panel = canvasGO;
-        _panel.SetActive(false);
-    }
-
-    /// <summary>선택 모드 동안 매 프레임: 제한시간 바 + 타임포스 부족 시 카드 흐리게.</summary>
-    private void UpdateDecisionUI()
-    {
-        if (_panel == null) return;
-        if (_timeoutBar != null)
-        {
-            float remain = Mathf.Clamp01((_decisionEndRealtime - Time.realtimeSinceStartup) / Mathf.Max(0.01f, decisionTimeout));
-            var s = _timeoutBar.rectTransform.localScale;
-            s.x = remain;
-            _timeoutBar.rectTransform.localScale = s;
-        }
-        if (_rewindCard != null) _rewindCard.alpha = HasForce(rewindCost) ? 1f : 0.35f;
-        if (_supportCard != null) _supportCard.alpha = HasForce(supportCost) ? 1f : 0.35f;
-    }
-
-    /// <summary>키 배지 + 제목 + 설명이 있는 선택 카드 한 장.</summary>
-    private CanvasGroup MakeCard(Transform parent, float offsetX, Color accent, string key, string titleText, string descText)
-    {
-        var card = MakeImage(parent, "Card", new Color(0f, 0f, 0f, 0.62f));
-        var rt = card.rectTransform;
-        rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
-        rt.anchoredPosition = new Vector2(offsetX, -150f);
-        rt.sizeDelta = new Vector2(400f, 130f);
-
-        // 좌측 강조선
-        var stripe = MakeImage(card.transform, "Stripe", accent);
-        var srt = stripe.rectTransform;
-        srt.anchorMin = new Vector2(0f, 0f);
-        srt.anchorMax = new Vector2(0f, 1f);
-        srt.pivot = new Vector2(0f, 0.5f);
-        srt.anchoredPosition = Vector2.zero;
-        srt.sizeDelta = new Vector2(6f, 0f);
-
-        // 마우스 키 배지
-        var badge = MakeImage(card.transform, "Badge", accent);
-        var brt = badge.rectTransform;
-        brt.anchorMin = brt.anchorMax = brt.pivot = new Vector2(0f, 1f);
-        brt.anchoredPosition = new Vector2(18f, -14f);
-        brt.sizeDelta = new Vector2(92f, 30f);
-        var keyText = MakeText(badge.transform, "Key", 17, FontStyle.Bold, TextAnchor.MiddleCenter);
-        keyText.text = key;
-        keyText.color = Color.black;
-        Stretch(keyText.rectTransform);
-
-        // 제목
-        var t = MakeText(card.transform, "Title", 26, FontStyle.Bold, TextAnchor.UpperLeft);
-        t.text = titleText;
-        var trt = t.rectTransform;
-        trt.anchorMin = trt.anchorMax = trt.pivot = new Vector2(0f, 1f);
-        trt.anchoredPosition = new Vector2(18f, -52f);
-        trt.sizeDelta = new Vector2(370f, 34f);
-
-        // 설명
-        var d = MakeText(card.transform, "Desc", 17, FontStyle.Normal, TextAnchor.UpperLeft);
-        d.text = descText;
-        d.color = new Color(1f, 1f, 1f, 0.75f);
-        var drt = d.rectTransform;
-        drt.anchorMin = drt.anchorMax = drt.pivot = new Vector2(0f, 1f);
-        drt.anchoredPosition = new Vector2(18f, -92f);
-        drt.sizeDelta = new Vector2(370f, 26f);
-
-        return card.gameObject.AddComponent<CanvasGroup>();
-    }
-
-    private Image MakeImage(Transform parent, string name, Color color)
-    {
-        var go = new GameObject(name);
-        go.transform.SetParent(parent, false);
-        var img = go.AddComponent<Image>();
-        img.color = color;
-        img.raycastTarget = false;
-        return img;
-    }
-
-    private Text MakeText(Transform parent, string name, int size, FontStyle style, TextAnchor anchor)
-    {
-        var go = new GameObject(name);
-        go.transform.SetParent(parent, false);
-        var txt = go.AddComponent<Text>();
-        txt.font = _uiFont;
-        txt.fontSize = size;
-        txt.fontStyle = style;
-        txt.alignment = anchor;
-        txt.color = Color.white;
-        txt.raycastTarget = false;
-        txt.horizontalOverflow = HorizontalWrapMode.Overflow;
-        txt.verticalOverflow = VerticalWrapMode.Overflow;
-        return txt;
-    }
-
-    private static void Stretch(RectTransform rt)
-    {
-        rt.anchorMin = Vector2.zero;
-        rt.anchorMax = Vector2.one;
-        rt.offsetMin = Vector2.zero;
-        rt.offsetMax = Vector2.zero;
-    }
-
-    private static void Place(RectTransform rt, Vector2 anchor, Vector2 size)
-    {
-        rt.anchorMin = rt.anchorMax = anchor;
-        rt.pivot = new Vector2(0.5f, 0.5f);
-        rt.anchoredPosition = Vector2.zero;
-        rt.sizeDelta = size;
+        _msgCooldown = korean ? "재사용 대기" : "ON COOLDOWN";
     }
 }

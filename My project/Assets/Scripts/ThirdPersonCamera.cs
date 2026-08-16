@@ -73,7 +73,26 @@ public class ThirdPersonCamera : MonoBehaviour
     private float _shakeDecay;      // 초당 감쇠량
     private float _fovKick;         // 추가 FOV(감쇠)
     private float _rollKick;        // 추가 롤(감쇠)
+
+    /// <summary>연출 킥의 누적 상한(도). 여러 이펙트가 겹쳐도 화면이 요동치지 않게 한다.</summary>
+    private const float MaxFovKick = 10f;
+    private const float MaxRollKick = 8f;
     private float _rewindWeight;    // 역행 연출 가중치 0~1
+
+    // 컷신(대상 주위를 도는 카메라)
+    private Transform _focus;
+    private float _focusWeight;     // 0=플레이어 시점, 1=컷신 시점
+    private float _focusAngle;      // 대상 주위를 도는 현재 각도(도)
+
+    [Header("컷신 카메라")]
+    [Tooltip("컷신 대상과의 거리(월드 미터)")]
+    [SerializeField] private float cinematicDistance = 1.2f;
+    [Tooltip("컷신 대상보다 이만큼 위에서 내려다본다(월드 미터)")]
+    [SerializeField] private float cinematicHeight = 0.45f;
+    [Tooltip("대상 주위를 도는 속도(도/초). 느리게 돌아야 '보여주는' 느낌이 난다.")]
+    [SerializeField] private float cinematicOrbitSpeed = 14f;
+    [Tooltip("컷신 시점으로 들고 나는 블렌드 속도(1/초)")]
+    [SerializeField] private float cinematicBlendSpeed = 1.6f;
     private bool _rewindActive;
     private float _noiseSeed;
     private float _recoilPitch;     // 사격 반동(위로 들림). 0으로 복귀
@@ -94,13 +113,33 @@ public class ThirdPersonCamera : MonoBehaviour
     }
 
     /// <summary>FOV를 순간적으로 밀었다가 되돌린다(양수=넓어짐, 음수=좁아짐).</summary>
-    public void AddFovKick(float degrees) => _fovKick += degrees;
+    /// <summary>
+    /// 순간적으로 시야각을 넓힌다(도). 상한을 두는 이유: 운석·구체처럼 여러 발이 연달아
+    /// 터지면 킥이 그대로 누적돼 화면이 20° 넘게 출렁이며 번쩍이는 것처럼 보인다.
+    /// </summary>
+    public void AddFovKick(float degrees)
+        => _fovKick = Mathf.Clamp(_fovKick + degrees, -MaxFovKick, MaxFovKick);
 
-    /// <summary>화면을 순간적으로 기울인다(도).</summary>
-    public void AddRoll(float degrees) => _rollKick += degrees;
+    /// <summary>화면을 순간적으로 기울인다(도). FOV 킥과 같은 이유로 상한을 둔다.</summary>
+    public void AddRoll(float degrees)
+        => _rollKick = Mathf.Clamp(_rollKick + degrees, -MaxRollKick, MaxRollKick);
 
     /// <summary>시간역행 연출 on/off — 물러나며 넓어지고 기울어진다.</summary>
     public void SetRewindCinematic(bool active) => _rewindActive = active;
+
+    /// <summary>
+    /// 컷신 연출: 지정한 대상을 천천히 돌며 비춘다(null이면 플레이어 시점으로 복귀).
+    /// 플레이어 시점(_yaw/_pitch)은 건드리지 않고 최종 포즈만 섞으므로,
+    /// 컷신이 끝나면 원래 보던 방향 그대로 돌아온다.
+    /// </summary>
+    public void SetCinematicFocus(Transform focus)
+    {
+        _focus = focus;
+        if (focus != null) _focusAngle = _yaw + 150f; // 뒤쪽 비스듬한 각도에서 시작
+    }
+
+    /// <summary>컷신 카메라가 완전히 잡혔는가(연출 타이밍을 맞출 때 참고).</summary>
+    public bool CinematicReady => _focusWeight > 0.98f;
 
     /// <summary>
     /// 사격 반동: 화면이 pitchUp(도)만큼 들리고 yaw(도)만큼 옆으로 밀렸다가 원래 조준점으로 복귀한다.
@@ -131,6 +170,7 @@ public class ThirdPersonCamera : MonoBehaviour
     private void Update()
     {
         if (Mouse.current == null) return;
+        if (BossController.CutsceneActive) return; // 컷신 중엔 시점 조작을 막는다
 
         Vector2 delta = Mouse.current.delta.ReadValue() * mouseSensitivity;
         _yaw += delta.x;
@@ -140,7 +180,6 @@ public class ThirdPersonCamera : MonoBehaviour
         // 우클릭 조준 상태 갱신
         // 시간 선택 모드(우클릭=시간공명 선택)와 시간역행 재생 중엔 조준으로 처리하지 않는다
         _isAiming = Mouse.current.rightButton.isPressed
-                    && !TimeShiftController.DecisionActive
                     && !TimeShiftController.RewindActive;
     }
 
@@ -194,6 +233,19 @@ public class ThirdPersonCamera : MonoBehaviour
             desiredPos += rotation * new Vector3(nx, ny, 0f) * (amp * normalDistance);
         }
 
+        // 컷신: 계산이 끝난 플레이어 시점 포즈 위에 '대상을 도는 시점'을 섞는다.
+        // _yaw/_pitch를 건드리지 않으므로 컷신이 끝나면 보던 방향 그대로 돌아온다.
+        if (_focusWeight > 0.001f && _focus != null)
+        {
+            Vector3 look = _focus.position + Vector3.up * cinematicHeight;
+            Vector3 orbit = Quaternion.Euler(0f, _focusAngle, 0f) * Vector3.back * cinematicDistance;
+            Vector3 cinePos = look + orbit + Vector3.up * cinematicHeight;
+            Quaternion cineRot = Quaternion.LookRotation((look - cinePos).normalized);
+
+            desiredPos = Vector3.Lerp(desiredPos, cinePos, _focusWeight);
+            rotation = Quaternion.Slerp(rotation, cineRot, _focusWeight);
+        }
+
         transform.position = desiredPos;
         transform.rotation = rotation;
     }
@@ -217,5 +269,9 @@ public class ThirdPersonCamera : MonoBehaviour
         _recoilYaw = Mathf.Lerp(_recoilYaw, 0f, r);
 
         _rewindWeight = Mathf.MoveTowards(_rewindWeight, _rewindActive ? 1f : 0f, rewindBlendSpeed * dt);
+
+        _focusWeight = Mathf.MoveTowards(_focusWeight, _focus != null ? 1f : 0f, cinematicBlendSpeed * dt);
+        if (_focusWeight > 0.001f) _focusAngle += cinematicOrbitSpeed * dt;
+        else if (_focus == null) _focusWeight = 0f;
     }
 }
