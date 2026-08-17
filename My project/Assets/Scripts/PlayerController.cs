@@ -23,8 +23,6 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private float runSpeed = 5.5f;
     [SerializeField] private float aimSpeed = 2f;
     [SerializeField] private float rotationSpeed = 15f;
-    [Tooltip("이동 중 Shift를 이 시간 이상 유지하면 달리기로 전환 (0 = 누르는 즉시)")]
-    [SerializeField] private float runHoldTime = 0f;
     [Tooltip("구르기 중 전방 이동 속도 = walkSpeed × 이 배율.\n달리기 속도로 미끄러져 과이동하는 것을 막고, 구르기 관성만 남긴다.")]
     [SerializeField] private float rollSpeedMultiplier = 1.2f;
     [Tooltip("구르기 전체 속도 배율. 애니메이션 재생 속도와 전방 이동 속도에 함께 곱해져\n" +
@@ -68,10 +66,10 @@ public class PlayerController : MonoBehaviour
     private Transform _camTransform;
     private Camera _aimCam;
     private float _verticalVelocity;
-    private float _runHoldTimer; // 이동 중 Shift 유지 시간 누적
     private bool _moving;              // 이번 프레임 이동 여부(조준 보정 판단용)
     private bool _rolling;             // 다이브 롤 재생 중(무적 프레임 / 애니메이션 가속)
     private bool _rollLocked;          // 롤 조작 잠금 구간(회복 구간에 들어서면 풀린다)
+    private bool _rollStateActive;     // 직전 프레임 롤 상태(진입 순간에만 기력을 빼기 위한 판정)
     private bool _isRunning;           // 질주 중(외부 참조용)
     private float _aimBlend;           // 조준 보정 블렌드(0~1)
     private float _poseGunYawOffset;   // 포즈상 총열이 몸 정면에서 틀어진 요 각(자동 측정)
@@ -173,7 +171,6 @@ public class PlayerController : MonoBehaviour
 
         // --- 입력 읽기 (New Input System) ---
         Vector2 input = ReadMoveInput();
-        bool shiftHeld = Keyboard.current.leftShiftKey.isPressed;
 
         // 카메라 기준 이동 방향(수평 평면)
         Vector3 camForward = _camTransform != null ? _camTransform.forward : Vector3.forward;
@@ -205,12 +202,14 @@ public class PlayerController : MonoBehaviour
             _rollLocked = _rolling && !recovering;
         }
 
-        // 달리기 판정: 반드시 Shift + 이동이어야 하고, Shift를 runHoldTime(기본 0=즉시) 이상 유지해야 달리기.
-        // 멈추거나 Shift를 떼면 타이머가 리셋되어 다시 걷기로 돌아간다. 조준 중엔 달리지 않는다.
-        bool shiftRun = moving && shiftHeld && !isAiming;
-        if (shiftRun) _runHoldTimer += Time.deltaTime;
-        else _runHoldTimer = 0f;
-        bool isRunning = shiftRun && _runHoldTimer >= runHoldTime;
+        // 기력은 '구르기가 실제로 시작된 순간'에만 뺀다.
+        // 누른 시점에 빼면, 구를 수 없는 상태에서 연타했을 때 구르지도 않고 기력만 사라진다.
+        if (_rolling && !_rollStateActive && _stats != null) _stats.TryUseRollStamina();
+        _rollStateActive = _rolling;
+
+        // 달리기는 이동하면 항상 켜진다(Shift는 이제 구르기 전용).
+        // 조준 중에는 달리지 않는다 — 조준 자세로 걸어야 총구가 크로스헤어를 따라간다.
+        bool isRunning = moving && !isAiming;
         _isRunning = isRunning;
 
         float speed = (isAiming ? aimSpeed : (isRunning ? runSpeed : walkSpeed)) * MoveSlowFactor;
@@ -271,10 +270,23 @@ public class PlayerController : MonoBehaviour
             animator.SetBool(IsRunningHash, isRunning);
             animator.SetBool(IsAimingHash, isAiming);
 
-            // 다이브 롤: 달리는 중에 C를 누르면 발동(기력 소모, 부족하면 불가)
-            if (isRunning && Keyboard.current.cKey.wasPressedThisFrame
-                && (_stats == null || _stats.TryUseRollStamina()))
+            // 다이브 롤: 이동 중 Shift로 발동(기력 소모, 부족하면 불가).
+            // 달리기가 상시가 되면서 Shift가 비었으므로 회피를 그쪽으로 옮겼다.
+            // 컨트롤러의 Roll 전환은 AnyState에 걸려 있어, 누른 프레임에 곧바로 구르기가 시작된다.
+            //
+            // 구르는 동안의 입력은 전부 무시한다 — 트리거는 소비될 때까지 남아 있고
+            // 롤 상태에서는 자기 자신으로 전환할 수 없어, 연타하면 롤이 끝나는 족족
+            // 다시 발동(연속 구르기)했다. 기력도 여기서 빼지 않는다 — 실제로 롤 상태에
+            // 들어간 프레임에서 뺀다(위) → 구른 횟수와 소모량이 정확히 1:1.
+            if (_rolling)
+            {
+                animator.ResetTrigger(RollHash); // 구르는 중에 눌린 입력은 큐에 남기지 않는다
+            }
+            else if (isRunning && Keyboard.current.leftShiftKey.wasPressedThisFrame
+                     && (_stats == null || _stats.CanRoll))
+            {
                 animator.SetTrigger(RollHash);
+            }
 
             // 걷기 중 상체를 소총 파지 자세로 유지(UpperBody 레이어) → 총이 허공에 뜨는 문제 방지.
             // 달리기(Rifle Run)는 자체가 소총 애니메이션이라 제외, 롤 중에도 제외.

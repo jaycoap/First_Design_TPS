@@ -13,8 +13,8 @@ using UnityEditor.SceneManagement;
 ///   (Walk/Run에서 Speed<0.1이면 Idle로 복귀)
 ///
 /// - PlayerController가 넘기는 파라미터(Speed:float, IsRunning:bool, IsAiming:bool, Roll:trigger)를 사용한다.
-///   IsRunning = 이동 중 Shift를 누르면 true (기본 즉시; 걷기/정지→달리기 트리거).
-///   Roll = 달리는 중 C키 → Rifle Run에서 Running Dive Roll로 1회 전환.
+///   IsRunning = 이동하면 항상 true(달리기 상시). 조준 중에만 false → Walk.
+///   Roll = 이동 중 Shift → 어느 상태에서든(AnyState) Running Dive Roll로 1회 전환.
 /// - 캐릭터는 이동 방향으로 몸을 회전(PlayerController)하므로, 정면/대각선 이동 모두
 ///   같은 전방 클립으로 표현되고 방향은 몸 회전이 담당한다.
 /// - 필요한 FBX(Walk Forward/Idle To Running/Rifle Run 등)가 Generic이면 Humanoid로
@@ -31,7 +31,7 @@ public static class PlayerAnimatorSetup
     private const string WalkFbx = AnimDir + "Walk Forward.fbx";       // 걷기 루프
     private const string StartRunFbx = AnimDir + "Idle To Running.fbx"; // 출발 동작
     private const string RunFbx = AnimDir + "Rifle Run.fbx";           // 달리기 루프
-    private const string RollFbx = AnimDir + "Running Dive Roll.fbx";   // 다이브 롤(C)
+    private const string RollFbx = AnimDir + "Running Dive Roll.fbx";   // 다이브 롤(Shift)
     private const string ReloadFbx = AnimDir + "Reloading.fbx";          // 재장전(상체 레이어)
     private const string FireFbx = AnimDir + "Aiming Firing Rifle.fbx";  // 발사(상체 레이어)
     private const string DieFbx = AnimDir + "Dying.fbx";                 // 사망(1회 재생 후 정지)
@@ -94,7 +94,7 @@ public static class PlayerAnimatorSetup
 
             // 파라미터 재구성(중복 방지)
             //  Speed     : 이동 여부(0=정지). PlayerController가 이동 속도×입력크기로 세팅
-            //  IsRunning : Shift를 이동 중 1초 이상 유지하면 true (걷기→달리기 전환 트리거)
+            //  IsRunning : 이동하면 항상 true(조준 중에만 false)
             //  IsAiming  : 조준 여부
             for (int i = controller.parameters.Length - 1; i >= 0; i--)
                 controller.RemoveParameter(i);
@@ -163,7 +163,7 @@ public static class PlayerAnimatorSetup
             }
 
             // 5) 트랜지션
-            // Idle → Idle To Running : 정지 상태에서 바로 달리기(Shift+이동)로 출발
+            // Idle → Idle To Running : 정지 상태에서 이동을 시작하면 바로 달리기로 출발
             //   (Idle→Walk보다 먼저 평가되도록 앞에 추가)
             var tIdleRun = idle.AddTransition(startRun);
             tIdleRun.hasExitTime = false;
@@ -185,7 +185,7 @@ public static class PlayerAnimatorSetup
             tWalkStop.duration = 0.15f;
             tWalkStop.AddCondition(AnimatorConditionMode.Less, MoveThreshold, "Speed");
 
-            // Walk → Idle To Running : 이동 중 Shift 1초+ 유지(IsRunning)
+            // Walk → Idle To Running : 조준을 풀면 걷기에서 달리기로 넘어간다
             var tStart = walk.AddTransition(startRun);
             tStart.hasExitTime = false;
             tStart.hasFixedDuration = true;
@@ -199,7 +199,7 @@ public static class PlayerAnimatorSetup
             tToRun.hasFixedDuration = true;
             tToRun.duration = 0.2f;
 
-            // Idle To Running → Walk : 출발 도중 Shift를 떼면 걷기로 취소
+            // Idle To Running → Walk : 출발 도중 조준하면 걷기로 취소
             var tStartCancel = startRun.AddTransition(walk);
             tStartCancel.hasExitTime = false;
             tStartCancel.hasFixedDuration = true;
@@ -213,7 +213,7 @@ public static class PlayerAnimatorSetup
             tCancel.duration = 0.15f;
             tCancel.AddCondition(AnimatorConditionMode.Less, MoveThreshold, "Speed");
 
-            // Rifle Run → Walk : Shift를 떼면(달리기 해제) 걷기로
+            // Rifle Run → Walk : 조준하면 걷기로
             var tRunToWalk = run.AddTransition(walk);
             tRunToWalk.hasExitTime = false;
             tRunToWalk.hasFixedDuration = true;
@@ -227,17 +227,22 @@ public static class PlayerAnimatorSetup
             tStop.duration = 0.20f;
             tStop.AddCondition(AnimatorConditionMode.Less, MoveThreshold, "Speed");
 
-            // 다이브 롤(C): 달리는 중에만 발동. Rifle Run ↔ Running Dive Roll
+            // 다이브 롤(Shift): 회피기이므로 어느 이동 상태에서든 즉시 나가야 한다.
             if (rollClip != null)
             {
                 var roll = sm.AddState("Running Dive Roll", new Vector3(940, 220, 0));
                 roll.motion = rollClip;
 
-                // Rifle Run → Running Dive Roll : Roll 트리거
-                var tRoll = run.AddTransition(roll);
+                // AnyState → Running Dive Roll : Roll 트리거
+                // Rifle Run에서만 걸면, 출발 동작(Idle To Running) 중에 누른 회피가
+                // 트리거로 대기하다 뒤늦게 튄다 — 정작 맞을 때는 구르지 못한다.
+                // 언제 눌러도 그 자리에서 구르도록 AnyState에서 건다.
+                // (구를 수 있는 조건 자체는 PlayerController가 판단한다: 달리는 중 + 기력)
+                var tRoll = sm.AddAnyStateTransition(roll);
                 tRoll.hasExitTime = false;
                 tRoll.hasFixedDuration = true;
                 tRoll.duration = 0.06f;
+                tRoll.canTransitionToSelf = false; // 구르는 중에 또 구르지 않는다
                 tRoll.AddCondition(AnimatorConditionMode.If, 0f, "Roll");
 
                 // 롤 복귀: 일어서는 뒷부분(RollExitTime 이후)에서 곧바로 현재 이동 상태로 빠져나간다.
@@ -247,7 +252,7 @@ public static class PlayerAnimatorSetup
                 const float RollExitTime = 0.72f;
                 const float RollExitBlend = 0.09f;
 
-                // → Rifle Run : Shift를 계속 누르고 있으면 달리기로 이어 달린다
+                // → Rifle Run : 계속 이동 중이면 달리기로 이어 달린다
                 var tRollRun = roll.AddTransition(run);
                 tRollRun.hasExitTime = true;
                 tRollRun.exitTime = RollExitTime;
@@ -255,7 +260,7 @@ public static class PlayerAnimatorSetup
                 tRollRun.duration = RollExitBlend;
                 tRollRun.AddCondition(AnimatorConditionMode.If, 0f, "IsRunning");
 
-                // → Walk : Shift를 뗀 채 이동 중이면 걷기로
+                // → Walk : 조준한 채 이동 중이면 걷기로
                 var tRollWalk = roll.AddTransition(walk);
                 tRollWalk.hasExitTime = true;
                 tRollWalk.exitTime = RollExitTime;
@@ -393,7 +398,7 @@ public static class PlayerAnimatorSetup
             WireSceneAnimator(controller);
 
             Debug.Log("<color=lime>[TPS-Anim] Player 애니메이터 구성 완료.</color> " +
-                      "이동=Walk, Shift=즉시 Idle To Running→Rifle Run, C=Running Dive Roll 로 연결되었습니다.");
+                      "이동=상시 달리기(Idle To Running→Rifle Run), 조준 중=Walk, Shift=Running Dive Roll 로 연결되었습니다.");
         }
         catch (System.Exception e)
         {

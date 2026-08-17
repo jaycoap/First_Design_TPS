@@ -31,6 +31,7 @@ public class PlayerTimeGhost : MonoBehaviour
         public Vector3[] lp;         // 본 로컬 위치
         public Quaternion[] lr;      // 본 로컬 회전
         public float health;         // 시간역행 복원용 체력
+        public float stamina;        // 시간역행 복원용 기력(구르기 에너지)
         public int ammo;             // 시간역행 복원용 탄약
         public bool valid;
     }
@@ -184,6 +185,7 @@ public class PlayerTimeGhost : MonoBehaviour
                 s.lr[i] = _srcBones[i].localRotation;
             }
             s.health = _stats != null ? _stats.Health : 0f;
+            s.stamina = _stats != null ? _stats.Stamina : 0f;
             s.ammo = _shooter != null ? _shooter.CurrentAmmo : 0;
             s.valid = true;
         }
@@ -346,12 +348,18 @@ public class PlayerTimeGhost : MonoBehaviour
             yield return null;
         }
 
-        // 최종(5초 전) 상태 적용: 위치·자세 + 체력·탄약
+        // 최종(5초 전) 상태 적용: 위치·자세 + 체력·기력·탄약
+        // (기력도 되돌려야 한다 — 굴러서 SP를 태운 직후 되감으면 몸은 과거로 갔는데
+        //  기력만 현재값으로 비어 있어, 되감기 전과 같은 상황을 다시 넘길 수가 없다)
         var final = FindAtOrBefore(newest - span);
         if (final != null)
         {
             ApplyToPlayer(final);
-            if (_stats != null) _stats.RewindHealth(final.health);
+            if (_stats != null)
+            {
+                _stats.RewindHealth(final.health);
+                _stats.RewindStamina(final.stamina);
+            }
             if (_shooter != null) _shooter.RewindAmmo(final.ammo);
         }
 

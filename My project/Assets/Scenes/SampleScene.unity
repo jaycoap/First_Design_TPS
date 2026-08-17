@@ -2825,7 +2825,7 @@ PrefabInstance:
       objectReference: {fileID: 330585548}
     - target: {fileID: 1247531648929672563, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: aimMask.m_Bits
-      value: 3639
+      value: 4294967039
       objectReference: {fileID: 0}
     - target: {fileID: 3938290274627670728, guid: eae6d6a838f5a304cb5f3e30755b5568, type: 3}
       propertyPath: supportDamage

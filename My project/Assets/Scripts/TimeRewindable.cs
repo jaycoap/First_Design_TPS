@@ -33,6 +33,7 @@ public class TimeRewindable : MonoBehaviour
     private int _head = -1, _count;
     private float _nextSampleTime;
     private IRewindableExtra _extra;
+    private IRewindTimeAware _timeAware;
     private static readonly List<TimeRewindable> All = new List<TimeRewindable>();
 
     public bool IsRewinding { get; private set; }
@@ -42,6 +43,7 @@ public class TimeRewindable : MonoBehaviour
         _buf = new Snap[Mathf.CeilToInt(recordSeconds * SampleRate)];
         _nextSampleTime = Time.time;
         _extra = GetComponent<IRewindableExtra>();
+        _timeAware = GetComponent<IRewindTimeAware>();
     }
 
     private void OnEnable() => All.Add(this);
@@ -135,11 +137,28 @@ public class TimeRewindable : MonoBehaviour
             if (s.t <= t || i == _count - 1)
             {
                 transform.SetPositionAndRotation(s.pos, s.rot);
-                if (applyExtra && _extra != null) _extra.ApplyRewindExtra(s.extra);
+                if (applyExtra)
+                {
+                    _extra?.ApplyRewindExtra(s.extra);
+                    // 위치·체력 말고도 되돌릴 게 있는 대상(보스의 패턴 쿨다운 등)에게
+                    // '어느 시점으로 돌아갔는지'를 알려 준다. 이게 없으면 보스는 과거 자리에
+                    // 과거 체력으로 서 있으면서 패턴만 현재 것을 이어가 버린다.
+                    _timeAware?.OnRewoundTo(s.t);
+                }
                 return;
             }
         }
     }
+}
+
+/// <summary>되감기 시 위치/회전 외의 상태(예: 체력)도 복원하고 싶은 컴포넌트가 구현.</summary>
+public interface IRewindTimeAware
+{
+    /// <summary>
+    /// 되감기가 끝났을 때, 돌아간 과거 시각(Time.time 기준)을 받는다.
+    /// 스스로 기록해 둔 상태를 그 시점 값으로 되돌리는 데 쓴다.
+    /// </summary>
+    void OnRewoundTo(float pastTime);
 }
 
 /// <summary>되감기 시 위치/회전 외의 상태(예: 체력)도 복원하고 싶은 컴포넌트가 구현.</summary>

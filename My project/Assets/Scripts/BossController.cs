@@ -24,7 +24,7 @@ using UnityEngine;
 /// </summary>
 [RequireComponent(typeof(CharacterController))]
 [DefaultExecutionOrder(60)] // BossRig(50)가 팔 포즈를 적용한 뒤 LateUpdate에서 손끝 위치를 읽는다
-public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
+public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRewindTimeAware
 {
     public enum Phase { Intro, Idle, Chase, Melee, Rush, Laser, Teleport, Judgment, Aerial, Dead }
 
@@ -621,6 +621,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     /// <summary>BossRig가 팔 포즈를 적용한 뒤(실행 순서 50) 손끝 기준 이펙트를 갱신한다.</summary>
     private void LateUpdate()
     {
+        // 되감기로 되돌릴 수 있도록 패턴 쿨다운을 계속 기록해 둔다
+        RecordPatternState();
+
         // 분신 처형 중에는 '진짜 전용' 색의 충전/광선을 쓴다(분신과 구분되는 유일한 단서)
         BossFx.ChargeOrb orb = _judgmentActive && _realOrb != null ? _realOrb : _orb;
         BossFx.Beam beam = _judgmentActive && _realBeam != null ? _realBeam : _beam;
@@ -2059,6 +2062,91 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     }
 
     // ---------- 시간역행 연동 ----------
+
+    // ---- 패턴 상태 되감기 ----
+    // 위치·체력만 되돌리면 보스는 "과거 자리에 과거 체력으로 서서 현재 패턴을 이어가는" 상태가 된다.
+    // 어떤 패턴이 언제 나올지는 쿨다운이 정하므로, 쿨다운도 함께 기록해 두었다가 되돌린다.
+
+    private struct PatternSnap
+    {
+        public float t;
+        public float melee, laser, rush, skyRain, aerial, meteor;
+        public float farTimer;   // 텔레포트 발동까지 '멀어진 채 버틴 시간' 누적값
+        public bool judgmentDone;
+        public bool valid;
+    }
+
+    /// <summary>TimeRewindable과 같은 기록 주기·보관 시간(초당 90회 × 6.5초).</summary>
+    private const float PatternSampleRate = 90f;
+    private readonly PatternSnap[] _patternBuf = new PatternSnap[Mathf.CeilToInt(6.5f * PatternSampleRate)];
+    private int _patternHead = -1, _patternCount;
+    private float _nextPatternSample;
+
+    /// <summary>쿨다운 상태를 링버퍼에 기록(LateUpdate에서 매 프레임이 아니라 일정 주기로).</summary>
+    private void RecordPatternState()
+    {
+        if (Time.time < _nextPatternSample) return;
+        _nextPatternSample = Mathf.Max(Time.time, _nextPatternSample + 1f / PatternSampleRate);
+
+        _patternHead = (_patternHead + 1) % _patternBuf.Length;
+        if (_patternCount < _patternBuf.Length) _patternCount++;
+        _patternBuf[_patternHead] = new PatternSnap
+        {
+            t = Time.time,
+            melee = _nextMelee,
+            laser = _nextLaser,
+            rush = _nextRush,
+            skyRain = _nextSkyRain,
+            aerial = _nextAerial,
+            meteor = _nextMeteorTime,
+            farTimer = _farTimer,
+            judgmentDone = _judgmentDone,
+            valid = true,
+        };
+    }
+
+    /// <summary>
+    /// 되감기가 끝난 뒤 호출된다. 쿨다운을 그 시점의 <b>남은 시간</b>으로 되돌린다.
+    ///
+    /// 절대 시각을 그대로 넣으면 안 된다 — 되감는 동안에도 Time.time은 계속 흘렀기 때문에,
+    /// 과거의 "다음 발동 시각"은 이미 지나가 버려 모든 패턴이 즉시 사용 가능해진다.
+    /// '그때 얼마나 남아 있었나'를 지금 시점에 다시 심어야 같은 순서로 패턴이 재생된다.
+    /// </summary>
+    public void OnRewoundTo(float pastTime)
+    {
+        if (_patternCount == 0) return;
+
+        for (int i = 0; i < _patternCount; i++)
+        {
+            var s = _patternBuf[(_patternHead - i + _patternBuf.Length * 2) % _patternBuf.Length];
+            if (!s.valid) break;
+            if (s.t > pastTime && i != _patternCount - 1) continue;
+
+            _nextMelee = Rearm(s.melee, s.t);
+            _nextLaser = Rearm(s.laser, s.t);
+            _nextRush = Rearm(s.rush, s.t);
+            _nextSkyRain = Rearm(s.skyRain, s.t);
+            _nextAerial = Rearm(s.aerial, s.t);
+            _nextMeteorTime = Rearm(s.meteor, s.t);
+            _farTimer = s.farTimer;  // 이건 누적 경과시간이라 그대로 되돌린다
+
+            // 분신 처형은 1회성이라, 그 이전으로 돌아갔다면 다시 쓸 수 있어야 한다
+            _judgmentDone = s.judgmentDone;
+            break;
+        }
+
+        // 되감긴 뒤의 기록은 '오지 않은 미래'라 무효
+        _patternHead = -1;
+        _patternCount = 0;
+        _nextPatternSample = Time.time;
+    }
+
+    /// <summary>과거 시점에 남아 있던 대기 시간을 지금 기준으로 다시 심는다.</summary>
+    private static float Rearm(float nextTime, float snapTime)
+    {
+        if (nextTime >= float.MaxValue * 0.5f) return float.MaxValue; // 아직 열리지 않은 패턴
+        return Time.time + Mathf.Max(0f, nextTime - snapTime);
+    }
 
     public float CaptureRewindExtra() => _health;
 

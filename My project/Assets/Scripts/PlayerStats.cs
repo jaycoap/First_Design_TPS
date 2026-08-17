@@ -69,6 +69,9 @@ public class PlayerStats : MonoBehaviour, IDamageable
 
     // ---------- 기력 ----------
 
+    /// <summary>구르기에 필요한 기력이 남아 있는가(소모하지 않고 확인만).</summary>
+    public bool CanRoll => _stamina >= rollStaminaCost;
+
     /// <summary>구르기용 기력 소모. 부족하면 false(구르기 불가).</summary>
     public bool TryUseRollStamina() => TryUseStamina(rollStaminaCost);
 
@@ -78,6 +81,17 @@ public class PlayerStats : MonoBehaviour, IDamageable
         _stamina -= amount;
         _lastStaminaUseTime = Time.time;
         return true;
+    }
+
+    /// <summary>
+    /// 시간역행 적용: 기력을 기록 시점 값으로 되돌린다.
+    /// 회복 대기(staminaRegenDelay)도 함께 풀어 준다 — 과거의 기력으로 돌아온 순간부터는
+    /// "방금 굴렀다"는 사실 자체가 없던 일이 되므로 대기 없이 곧바로 차오른다.
+    /// </summary>
+    public void RewindStamina(float stamina)
+    {
+        _stamina = Mathf.Clamp(stamina, 0f, maxStamina);
+        _lastStaminaUseTime = 0f;
     }
 
     // ---------- 타임포스 ----------

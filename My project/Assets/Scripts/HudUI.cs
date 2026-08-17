@@ -23,11 +23,9 @@ public class HudUI : MonoBehaviour
     private Text _rewindState, _supportState;
     private Text _toast;
 
-    private Image _hpFill, _spFill, _tfFill;
-    private Text _hpText, _spText, _tfText, _ammoText, _reloadText;
+    private Bar _hp, _sp, _tf, _boss;
+    private Text _ammoText, _reloadText;
     private GameObject _bossRoot;
-    private Image _bossFill;
-    private Text _bossText;
     // 게임 오버(사망 → R로 재시작)
     private CanvasGroup _gameOver;
     private bool _restarting;
@@ -40,6 +38,31 @@ public class HudUI : MonoBehaviour
 
     private static Sprite _whiteSprite;
     private Font _font;
+
+    // ---- 좌하단 스탯 패널 배치(1920x1080 기준) ----
+    private const float PanelX = 44f;   // 왼쪽 여백
+    private const float BarY = 40f;     // 맨 아래 바(TF)의 바닥 높이
+    private const float BarW = 500f;
+    private const float BarH = 30f;
+    private const float BarGap = 9f;
+    private const float ChipY = BarY + 3f * BarH + 2f * BarGap + 14f; // 바 3줄 위
+    private const float ChipH = 40f;
+
+    /// <summary>
+    /// 게이지 한 줄의 표시 상태.
+    /// 값이 뚝 끊겨 보이지 않도록 표시값(Display)을 따로 두고 부드럽게 따라가게 하며,
+    /// 줄어든 만큼은 잔상(Trail)이 천천히 뒤따라와 "방금 얼마를 깎였는지"가 눈에 남는다.
+    /// </summary>
+    private class Bar
+    {
+        public Image Fill;    // 실제 값
+        public Image Trail;   // 뒤늦게 따라오는 잔상(감소분)
+        public Image Edge;    // 채움 끝의 밝은 캡
+        public Text Value;
+        public Color Color;   // 기본 채움색(맥동 시 여기서 흰색 쪽으로 섞는다)
+        public float Display, TrailValue;
+        public bool Warn;     // 낮을 때 맥동시킬지(체력)
+    }
 
     /// <summary>씬에 HUD가 없으면 자동 생성 — 에디터 툴 실행 여부와 무관하게 항상 표시된다.</summary>
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -66,9 +89,9 @@ public class HudUI : MonoBehaviour
     {
         if (_stats != null)
         {
-            SetBar(_hpFill, _hpText, _stats.Health, _stats.MaxHealth);
-            SetBar(_spFill, _spText, _stats.Stamina, _stats.MaxStamina);
-            SetBar(_tfFill, _tfText, _stats.TimeForce, _stats.MaxTimeForce);
+            UpdateBar(_hp, _stats.Health, _stats.MaxHealth);
+            UpdateBar(_sp, _stats.Stamina, _stats.MaxStamina);
+            UpdateBar(_tf, _stats.TimeForce, _stats.MaxTimeForce);
         }
         if (_shooter != null)
         {
@@ -83,7 +106,7 @@ public class HudUI : MonoBehaviour
         var boss = BossController.Active;
         bool showBoss = boss != null && !boss.IsDead && !boss.IntroPlaying; // 등장 컷신 전엔 숨긴다
         if (_bossRoot != null && _bossRoot.activeSelf != showBoss) _bossRoot.SetActive(showBoss);
-        if (showBoss) SetBar(_bossFill, _bossText, boss.Health, boss.MaxHealth);
+        if (showBoss) UpdateBar(_boss, boss.Health, boss.MaxHealth);
 
         // 분신 처형 경고: 남은 시간이 줄어드는 동안 진짜를 찾아 협공·사격을 퍼부어야 한다
         bool showJudgment = showBoss && boss.JudgmentActive;
@@ -199,10 +222,46 @@ public class HudUI : MonoBehaviour
         SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
     }
 
-    private static void SetBar(Image fill, Text label, float value, float max)
+    /// <summary>
+    /// 게이지 한 줄 갱신. 시간은 unscaled로 잰다 —
+    /// 시간역행처럼 timeScale을 건드리는 연출 중에도 HUD는 제 속도로 움직여야 한다.
+    /// </summary>
+    private static void UpdateBar(Bar bar, float value, float max)
     {
-        if (fill != null) fill.fillAmount = max > 0f ? value / max : 0f;
-        if (label != null) label.text = $"{Mathf.CeilToInt(value)} / {Mathf.CeilToInt(max)}";
+        if (bar == null || bar.Fill == null) return;
+
+        float target = max > 0f ? Mathf.Clamp01(value / max) : 0f;
+        float dt = Time.unscaledDeltaTime;
+
+        // 본 게이지는 차이가 클수록 빠르게 붙고, 잔상은 일정한 속도로 천천히 따라온다
+        bar.Display = Mathf.MoveTowards(bar.Display, target,
+                                        (0.4f + Mathf.Abs(target - bar.Display) * 6f) * dt);
+        if (bar.TrailValue < bar.Display) bar.TrailValue = bar.Display; // 회복은 잔상도 같이 올라간다
+        else bar.TrailValue = Mathf.MoveTowards(bar.TrailValue, bar.Display, 0.5f * dt);
+
+        bar.Fill.fillAmount = bar.Display;
+        if (bar.Trail != null) bar.Trail.fillAmount = bar.TrailValue;
+
+        // 채움 끝의 밝은 캡 — 게이지가 살아 움직이는 느낌을 준다
+        if (bar.Edge != null)
+        {
+            bool show = bar.Display > 0.005f;
+            if (bar.Edge.enabled != show) bar.Edge.enabled = show;
+            if (show)
+            {
+                var ert = bar.Edge.rectTransform;
+                ert.anchorMin = new Vector2(bar.Display, 0f);
+                ert.anchorMax = new Vector2(bar.Display, 1f);
+            }
+        }
+
+        // 위험 구간에서는 맥동시켜 시선을 끈다(체력 전용)
+        float pulse = bar.Warn && target > 0f && target < 0.25f
+            ? 0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 9f)
+            : 0f;
+        bar.Fill.color = pulse > 0f ? Color.Lerp(bar.Color, Color.white, pulse * 0.5f) : bar.Color;
+
+        if (bar.Value != null) bar.Value.text = $"{Mathf.CeilToInt(value)} / {Mathf.CeilToInt(max)}";
     }
 
     // ---------- UI 구성 ----------
@@ -218,32 +277,58 @@ public class HudUI : MonoBehaviour
         scaler.referenceResolution = new Vector2(1920f, 1080f);
         scaler.matchWidthOrHeight = 0.5f;
 
+        // 좌하단 스탯 패널: 어두운 판을 먼저 깔아 밝은 배경 위에서도 게이지가 읽히게 한다
+        BuildStatBackdrop(canvas.transform);
+
         // 좌하단 스탯 바 3종
-        _hpFill = MakeBar(canvas.transform, "HP", 0, new Color(0.85f, 0.25f, 0.25f), out _hpText);
-        _spFill = MakeBar(canvas.transform, "SP", 1, new Color(0.35f, 0.8f, 0.35f), out _spText);
-        _tfFill = MakeBar(canvas.transform, "TF", 2, new Color(0.35f, 0.7f, 0.95f), out _tfText);
+        _hp = MakeBar(canvas.transform, "HP", 0, new Color(0.95f, 0.22f, 0.3f), warn: true);
+        _sp = MakeBar(canvas.transform, "SP", 1, new Color(0.35f, 0.9f, 0.45f));
+        _tf = MakeBar(canvas.transform, "TF", 2, new Color(0.35f, 0.72f, 1f));
 
         // 우하단 탄약 표시
-        _ammoText = MakeText(canvas.transform, "Ammo", 44, FontStyle.Bold, TextAnchor.LowerRight);
+        _ammoText = MakeText(canvas.transform, "Ammo", 60, FontStyle.Bold, TextAnchor.LowerRight);
         var ammoRt = _ammoText.rectTransform;
         ammoRt.anchorMin = ammoRt.anchorMax = ammoRt.pivot = new Vector2(1f, 0f);
-        ammoRt.anchoredPosition = new Vector2(-40f, 40f);
-        ammoRt.sizeDelta = new Vector2(300f, 52f);
+        ammoRt.anchoredPosition = new Vector2(-48f, 44f);
+        ammoRt.sizeDelta = new Vector2(360f, 70f);
 
         // 재장전 표시(탄약 위)
-        _reloadText = MakeText(canvas.transform, "Reloading", 24, FontStyle.Bold, TextAnchor.LowerRight);
+        _reloadText = MakeText(canvas.transform, "Reloading", 30, FontStyle.Bold, TextAnchor.LowerRight);
         _reloadText.text = "RELOADING...";
         _reloadText.color = new Color(1f, 0.7f, 0.2f);
         var rlRt = _reloadText.rectTransform;
         rlRt.anchorMin = rlRt.anchorMax = rlRt.pivot = new Vector2(1f, 0f);
-        rlRt.anchoredPosition = new Vector2(-40f, 96f);
-        rlRt.sizeDelta = new Vector2(300f, 30f);
+        rlRt.anchoredPosition = new Vector2(-48f, 120f);
+        rlRt.sizeDelta = new Vector2(360f, 38f);
         _reloadText.enabled = false;
 
         BuildAbilityChips(canvas.transform);
         BuildBossBar(canvas.transform);
         BuildJudgmentWarning(canvas.transform);
         BuildGameOver(canvas.transform);
+    }
+
+    /// <summary>
+    /// 스탯 패널 배경. 게이지·능력 슬롯 전체를 감싸는 어두운 판 + 아래쪽 액센트 선.
+    /// (밝은 바닥이나 폭발 이펙트 위에서 게이지가 묻히는 것을 막는다)
+    /// </summary>
+    private void BuildStatBackdrop(Transform parent)
+    {
+        float top = (_shift != null ? ChipY + ChipH : BarY + 3f * BarH + 2f * BarGap) + 14f;
+
+        var panel = MakeImage(parent, "StatPanel", new Color(0.03f, 0.04f, 0.07f, 0.45f));
+        var rt = panel.rectTransform;
+        rt.anchorMin = rt.anchorMax = rt.pivot = Vector2.zero;
+        rt.anchoredPosition = new Vector2(PanelX - 16f, BarY - 16f);
+        rt.sizeDelta = new Vector2(BarW + 32f, top - BarY + 32f);
+
+        var line = MakeImage(panel.transform, "AccentLine", new Color(0.4f, 0.75f, 1f, 0.55f));
+        var lrt = line.rectTransform;
+        lrt.anchorMin = new Vector2(0f, 0f);
+        lrt.anchorMax = new Vector2(1f, 0f);
+        lrt.pivot = new Vector2(0.5f, 0f);
+        lrt.anchoredPosition = Vector2.zero;
+        lrt.sizeDelta = new Vector2(0f, 2f);
     }
 
     /// <summary>
@@ -255,28 +340,29 @@ public class HudUI : MonoBehaviour
     {
         if (_shift == null) return; // 시간 능력이 없는 구성이면 슬롯도 만들지 않는다
 
-        const float x = 40f, y = 136f, w = 165f, gap = 10f;
+        const float gap = 12f;
+        const float w = (BarW - gap) * 0.5f;  // 두 칸이 게이지 폭에 정확히 맞아떨어진다
         var rewindColor = new Color(0.35f, 0.8f, 1f);
         var supportColor = new Color(1f, 0.65f, 0.3f);
 
-        _rewindChip = MakeAbilityChip(parent, x, y, w, rewindColor, "T",
+        _rewindChip = MakeAbilityChip(parent, PanelX, ChipY, w, rewindColor, "T",
             _korean ? "크로노 브레이크" : "CHRONO BREAK", out _rewindFill, out _rewindState);
-        _supportChip = MakeAbilityChip(parent, x + w + gap, y, w, supportColor, "G",
+        _supportChip = MakeAbilityChip(parent, PanelX + w + gap, ChipY, w, supportColor, "G",
             _korean ? "타임 어소리티" : "TIME AUTHORITY", out _supportFill, out _supportState);
 
         // 타임포스 바 위의 비용 눈금(둘 다 같은 값이면 하나만 보인다)
-        if (_stats != null && _stats.MaxTimeForce > 0f)
+        if (_stats != null && _stats.MaxTimeForce > 0f && _tf != null)
         {
-            AddCostTick(_tfFill, _shift.RewindCost / _stats.MaxTimeForce, rewindColor);
-            AddCostTick(_tfFill, _shift.SupportCost / _stats.MaxTimeForce, supportColor);
+            AddCostTick(_tf.Fill, _shift.RewindCost / _stats.MaxTimeForce, rewindColor);
+            AddCostTick(_tf.Fill, _shift.SupportCost / _stats.MaxTimeForce, supportColor);
         }
 
-        _toast = MakeText(parent, "AbilityToast", 20, FontStyle.Bold, TextAnchor.LowerLeft);
+        _toast = MakeText(parent, "AbilityToast", 24, FontStyle.Bold, TextAnchor.LowerLeft);
         _toast.color = new Color(1f, 0.75f, 0.3f);
         var trt = _toast.rectTransform;
         trt.anchorMin = trt.anchorMax = trt.pivot = Vector2.zero;
-        trt.anchoredPosition = new Vector2(x, y + 36f);
-        trt.sizeDelta = new Vector2(520f, 28f);
+        trt.anchoredPosition = new Vector2(PanelX, ChipY + ChipH + 12f);
+        trt.sizeDelta = new Vector2(600f, 32f);
         _toast.enabled = false;
     }
 
@@ -284,57 +370,62 @@ public class HudUI : MonoBehaviour
     private CanvasGroup MakeAbilityChip(Transform parent, float x, float y, float width, Color accent,
                                         string key, string label, out Image fill, out Text state)
     {
-        const float h = 30f;
+        float h = ChipH;
 
-        var bg = MakeImage(parent, "Ability_" + key, new Color(0f, 0f, 0f, 0.55f));
+        // 액센트 테두리를 슬롯의 뿌리로 삼는다 — CanvasGroup(흐림 처리)이 테두리까지 함께 먹는다
+        var frame = MakeImage(parent, "Ability_" + key, new Color(accent.r, accent.g, accent.b, 0.45f));
+        var frRt = frame.rectTransform;
+        frRt.anchorMin = frRt.anchorMax = frRt.pivot = Vector2.zero;
+        frRt.anchoredPosition = new Vector2(x - 2f, y - 2f);
+        frRt.sizeDelta = new Vector2(width + 4f, h + 4f);
+
+        var bg = MakeImage(frame.transform, "Body", new Color(0.02f, 0.03f, 0.05f, 0.85f));
         var rt = bg.rectTransform;
-        rt.anchorMin = rt.anchorMax = rt.pivot = Vector2.zero;
-        rt.anchoredPosition = new Vector2(x, y);
-        rt.sizeDelta = new Vector2(width, h);
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = new Vector2(2f, 2f);
+        rt.offsetMax = new Vector2(-2f, -2f);
 
         // 채움: 평소엔 타임포스 충전 정도, 협공 중에는 남은 시간
-        fill = MakeImage(bg.transform, "Fill", new Color(accent.r, accent.g, accent.b, 0.3f));
-        var frt = fill.rectTransform;
-        frt.anchorMin = Vector2.zero;
-        frt.anchorMax = Vector2.one;
-        frt.offsetMin = new Vector2(2f, 2f);
-        frt.offsetMax = new Vector2(-2f, -2f);
-        fill.type = Image.Type.Filled;
-        fill.fillMethod = Image.FillMethod.Horizontal;
-        fill.fillOrigin = (int)Image.OriginHorizontal.Left;
+        fill = MakeFill(bg.transform, "Fill", new Color(accent.r, accent.g, accent.b, 0.32f));
+        AddGloss(bg.transform);
 
+        // 키 배지 — 액센트 색을 꽉 채운 사각형에 어두운 글자(눌러야 할 키가 먼저 눈에 든다)
         var badge = MakeImage(bg.transform, "Badge", accent);
-        var brt = badge.rectTransform;
-        brt.anchorMin = brt.anchorMax = brt.pivot = new Vector2(0f, 0.5f);
-        brt.anchoredPosition = new Vector2(6f, 0f);
-        brt.sizeDelta = new Vector2(24f, 22f);
+        var bfrt = badge.rectTransform;
+        bfrt.anchorMin = bfrt.anchorMax = bfrt.pivot = new Vector2(0f, 0.5f);
+        bfrt.anchoredPosition = new Vector2(8f, 0f);
+        bfrt.sizeDelta = new Vector2(30f, 28f);
 
-        var keyText = MakeText(badge.transform, "Key", 14, FontStyle.Bold, TextAnchor.MiddleCenter);
+        var keyText = MakeText(badge.transform, "Key", 18, FontStyle.Bold, TextAnchor.MiddleCenter);
         keyText.text = key;
-        keyText.color = Color.black;
+        keyText.color = new Color(0.05f, 0.06f, 0.1f);
         var krt = keyText.rectTransform;
         krt.anchorMin = Vector2.zero;
         krt.anchorMax = Vector2.one;
         krt.offsetMin = Vector2.zero;
         krt.offsetMax = Vector2.zero;
 
-        var name = MakeText(bg.transform, "Name", 14, FontStyle.Bold, TextAnchor.MiddleLeft);
+        // 이름은 배지 오른쪽부터, 상태 글자가 들어갈 자리(오른쪽 72px)까지만 쓴다.
+        // 예전에는 이름 영역이 칸 끝까지 뻗어 있어 상태 글자와 겹쳐 읽을 수 없었다.
+        var name = MakeText(bg.transform, "Name", 16, FontStyle.Bold, TextAnchor.MiddleLeft);
         name.text = label;
         var nrt = name.rectTransform;
         nrt.anchorMin = Vector2.zero;
         nrt.anchorMax = Vector2.one;
-        nrt.offsetMin = new Vector2(36f, 0f);
-        nrt.offsetMax = new Vector2(-8f, 0f);
+        nrt.offsetMin = new Vector2(46f, 0f);
+        nrt.offsetMax = new Vector2(-74f, 0f);
 
-        state = MakeText(bg.transform, "State", 12, FontStyle.Normal, TextAnchor.MiddleRight);
-        state.color = new Color(1f, 1f, 1f, 0.85f);
+        state = MakeText(bg.transform, "State", 14, FontStyle.Bold, TextAnchor.MiddleRight);
+        state.color = Color.Lerp(accent, Color.white, 0.5f);
         var srt = state.rectTransform;
-        srt.anchorMin = Vector2.zero;
-        srt.anchorMax = Vector2.one;
-        srt.offsetMin = new Vector2(8f, 0f);
-        srt.offsetMax = new Vector2(-8f, 0f);
+        srt.anchorMin = new Vector2(1f, 0f);
+        srt.anchorMax = new Vector2(1f, 1f);
+        srt.pivot = new Vector2(1f, 0.5f);
+        srt.anchoredPosition = new Vector2(-10f, 0f);
+        srt.sizeDelta = new Vector2(66f, 0f);
 
-        return bg.gameObject.AddComponent<CanvasGroup>();
+        return frame.gameObject.AddComponent<CanvasGroup>();
     }
 
     /// <summary>게이지 바에 "여기부터 쓸 수 있다"는 세로 눈금을 긋는다.</summary>
@@ -480,86 +571,157 @@ public class HudUI : MonoBehaviour
     /// <summary>상단 중앙 보스 체력 바(보스가 없으면 숨긴다).</summary>
     private void BuildBossBar(Transform parent)
     {
-        const float width = 900f, height = 20f;
+        const float width = 1040f, height = 28f;
+        var color = new Color(0.8f, 0.28f, 1f);
+        _boss = new Bar { Color = color };
 
-        var bg = MakeImage(parent, "BossBar", new Color(0f, 0f, 0f, 0.55f));
-        _bossRoot = bg.gameObject;
+        // 테두리를 뿌리로 삼는다(보스가 사라지면 통째로 숨긴다)
+        var frame = MakeImage(parent, "BossBar", new Color(color.r, color.g, color.b, 0.45f));
+        _bossRoot = frame.gameObject;
+        var frRt = frame.rectTransform;
+        frRt.anchorMin = frRt.anchorMax = frRt.pivot = new Vector2(0.5f, 1f);
+        frRt.anchoredPosition = new Vector2(0f, -46f);
+        frRt.sizeDelta = new Vector2(width + 4f, height + 4f);
+
+        var bg = MakeImage(frame.transform, "Body", new Color(0.03f, 0.01f, 0.05f, 0.8f));
         var bgRt = bg.rectTransform;
-        bgRt.anchorMin = bgRt.anchorMax = bgRt.pivot = new Vector2(0.5f, 1f);
-        bgRt.anchoredPosition = new Vector2(0f, -48f);
-        bgRt.sizeDelta = new Vector2(width, height);
+        bgRt.anchorMin = Vector2.zero;
+        bgRt.anchorMax = Vector2.one;
+        bgRt.offsetMin = new Vector2(2f, 2f);
+        bgRt.offsetMax = new Vector2(-2f, -2f);
 
-        _bossFill = MakeImage(bg.transform, "Fill", new Color(0.75f, 0.3f, 1f));
-        var fillRt = _bossFill.rectTransform;
-        fillRt.anchorMin = Vector2.zero;
-        fillRt.anchorMax = Vector2.one;
-        fillRt.offsetMin = new Vector2(2f, 2f);
-        fillRt.offsetMax = new Vector2(-2f, -2f);
-        _bossFill.type = Image.Type.Filled;
-        _bossFill.fillMethod = Image.FillMethod.Horizontal;
-        _bossFill.fillOrigin = (int)Image.OriginHorizontal.Left;
+        _boss.Trail = MakeFill(bg.transform, "Trail", new Color(1f, 0.85f, 0.95f, 0.5f));
+        _boss.Fill = MakeFill(bg.transform, "Fill", color);
 
-        var label = MakeText(bg.transform, "Label", 18, FontStyle.Bold, TextAnchor.LowerLeft);
+        _boss.Edge = MakeImage(_boss.Fill.transform, "Edge", Color.Lerp(color, Color.white, 0.85f));
+        var edRt = _boss.Edge.rectTransform;
+        edRt.anchorMin = new Vector2(0f, 0f);
+        edRt.anchorMax = new Vector2(0f, 1f);
+        edRt.pivot = new Vector2(0.5f, 0.5f);
+        edRt.anchoredPosition = Vector2.zero;
+        edRt.sizeDelta = new Vector2(6f, 0f);
+
+        AddSegments(bg.transform, 20); // 보스는 칸을 촘촘히 — 한 칸이 깎이는 게 보인다
+        AddGloss(bg.transform);
+
+        var label = MakeText(bg.transform, "Label", 26, FontStyle.Bold, TextAnchor.LowerCenter);
         label.text = "ALIEN MONSTER";
+        label.color = new Color(1f, 0.9f, 1f);
         var labRt = label.rectTransform;
         labRt.anchorMin = new Vector2(0f, 1f);
         labRt.anchorMax = new Vector2(1f, 1f);
         labRt.pivot = new Vector2(0.5f, 0f);
-        labRt.anchoredPosition = new Vector2(0f, 4f);
-        labRt.sizeDelta = new Vector2(0f, 24f);
+        labRt.anchoredPosition = new Vector2(0f, 6f);
+        labRt.sizeDelta = new Vector2(0f, 32f);
 
-        _bossText = MakeText(bg.transform, "Value", 14, FontStyle.Normal, TextAnchor.MiddleRight);
-        var valRt = _bossText.rectTransform;
-        valRt.anchorMin = Vector2.zero;
-        valRt.anchorMax = Vector2.one;
-        valRt.offsetMin = new Vector2(8f, 0f);
-        valRt.offsetMax = new Vector2(-8f, 0f);
+        _boss.Value = MakeText(bg.transform, "Value", 16, FontStyle.Bold, TextAnchor.MiddleRight);
+        StretchInside(_boss.Value.rectTransform, 12f);
 
         _bossRoot.SetActive(false);
     }
 
-    /// <summary>좌하단에 라벨 + 게이지 바 한 줄 생성. 인덱스 순서대로 위에서 아래로 쌓인다.</summary>
-    private Image MakeBar(Transform parent, string label, int index, Color color, out Text valueText)
+    /// <summary>
+    /// 좌하단 게이지 한 줄 생성(인덱스 0=HP가 맨 위).
+    /// 구성: 액센트 테두리 → 어두운 홈 → 감소 잔상 → 채움(+끝 캡) → 눈금 → 유리 광택 → 글자.
+    /// </summary>
+    private Bar MakeBar(Transform parent, string label, int index, Color color, bool warn = false)
     {
-        const float width = 340f, height = 22f, gap = 10f, x = 40f;
-        float y = 40f + (2 - index) * (height + gap); // index 0(HP)이 맨 위
+        float y = BarY + (2 - index) * (BarH + BarGap);
+        var bar = new Bar { Color = color, Warn = warn };
 
-        // 배경
-        var bg = MakeImage(parent, label + "Bar", new Color(0f, 0f, 0f, 0.5f));
+        // 액센트 테두리(바보다 조금 크게 깔아 윤곽을 세운다)
+        var frame = MakeImage(parent, label + "Frame", new Color(color.r, color.g, color.b, 0.4f));
+        var frRt = frame.rectTransform;
+        frRt.anchorMin = frRt.anchorMax = frRt.pivot = Vector2.zero;
+        frRt.anchoredPosition = new Vector2(PanelX - 2f, y - 2f);
+        frRt.sizeDelta = new Vector2(BarW + 4f, BarH + 4f);
+
+        // 홈(배경)
+        var bg = MakeImage(parent, label + "Bar", new Color(0.02f, 0.03f, 0.05f, 0.8f));
         var bgRt = bg.rectTransform;
-        bgRt.anchorMin = bgRt.anchorMax = bgRt.pivot = new Vector2(0f, 0f);
-        bgRt.anchoredPosition = new Vector2(x, y);
-        bgRt.sizeDelta = new Vector2(width, height);
+        bgRt.anchorMin = bgRt.anchorMax = bgRt.pivot = Vector2.zero;
+        bgRt.anchoredPosition = new Vector2(PanelX, y);
+        bgRt.sizeDelta = new Vector2(BarW, BarH);
 
-        // 채움(fillAmount로 좌→우 채움)
-        var fill = MakeImage(bg.transform, "Fill", color);
-        var fillRt = fill.rectTransform;
-        fillRt.anchorMin = Vector2.zero;
-        fillRt.anchorMax = Vector2.one;
-        fillRt.offsetMin = new Vector2(2f, 2f);
-        fillRt.offsetMax = new Vector2(-2f, -2f);
-        fill.type = Image.Type.Filled;
-        fill.fillMethod = Image.FillMethod.Horizontal;
-        fill.fillOrigin = (int)Image.OriginHorizontal.Left;
+        // 감소 잔상 → 본 채움 순서로 겹친다(잔상이 뒤에 남아 깎인 폭이 보인다)
+        bar.Trail = MakeFill(bg.transform, "Trail", Color.Lerp(color, Color.white, 0.75f) * new Color(1f, 1f, 1f, 0.5f));
+        bar.Fill = MakeFill(bg.transform, "Fill", color);
 
-        // 라벨(바 왼쪽 안)
-        var lab = MakeText(bg.transform, "Label", 15, FontStyle.Bold, TextAnchor.MiddleLeft);
+        // 채움 끝의 밝은 캡(UpdateBar가 매 프레임 위치를 옮긴다)
+        bar.Edge = MakeImage(bar.Fill.transform, "Edge", Color.Lerp(color, Color.white, 0.85f));
+        var edRt = bar.Edge.rectTransform;
+        edRt.anchorMin = new Vector2(0f, 0f);
+        edRt.anchorMax = new Vector2(0f, 1f);
+        edRt.pivot = new Vector2(0.5f, 0.5f);
+        edRt.anchoredPosition = Vector2.zero;
+        edRt.sizeDelta = new Vector2(5f, 0f);
+
+        AddSegments(bg.transform, 10);
+        AddGloss(bg.transform);
+
+        // 라벨(바 왼쪽 안) — 게이지 색을 옅게 입혀 어느 자원인지 색으로도 읽히게 한다
+        var lab = MakeText(bg.transform, "Label", 19, FontStyle.Bold, TextAnchor.MiddleLeft);
         lab.text = label;
-        var labRt = lab.rectTransform;
-        labRt.anchorMin = Vector2.zero;
-        labRt.anchorMax = Vector2.one;
-        labRt.offsetMin = new Vector2(8f, 0f);
-        labRt.offsetMax = new Vector2(-8f, 0f);
+        lab.color = Color.Lerp(color, Color.white, 0.65f);
+        StretchInside(lab.rectTransform, 12f);
 
         // 수치(바 오른쪽 안)
-        valueText = MakeText(bg.transform, "Value", 14, FontStyle.Normal, TextAnchor.MiddleRight);
-        var valRt = valueText.rectTransform;
-        valRt.anchorMin = Vector2.zero;
-        valRt.anchorMax = Vector2.one;
-        valRt.offsetMin = new Vector2(8f, 0f);
-        valRt.offsetMax = new Vector2(-8f, 0f);
+        bar.Value = MakeText(bg.transform, "Value", 17, FontStyle.Bold, TextAnchor.MiddleRight);
+        StretchInside(bar.Value.rectTransform, 12f);
 
-        return fill;
+        return bar;
+    }
+
+    /// <summary>좌→우로 차는 채움 이미지(바 안쪽에 2px 물려 넣는다).</summary>
+    private Image MakeFill(Transform parent, string name, Color color)
+    {
+        var img = MakeImage(parent, name, color);
+        var rt = img.rectTransform;
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = new Vector2(2f, 2f);
+        rt.offsetMax = new Vector2(-2f, -2f);
+        img.type = Image.Type.Filled;
+        img.fillMethod = Image.FillMethod.Horizontal;
+        img.fillOrigin = (int)Image.OriginHorizontal.Left;
+        img.fillAmount = 0f;
+        return img;
+    }
+
+    /// <summary>게이지를 세로 눈금으로 잘라 계기판처럼 보이게 한다.</summary>
+    private void AddSegments(Transform bar, int count)
+    {
+        for (int i = 1; i < count; i++)
+        {
+            var seg = MakeImage(bar, "Seg", new Color(0f, 0f, 0f, 0.35f));
+            var rt = seg.rectTransform;
+            float f = i / (float)count;
+            rt.anchorMin = new Vector2(f, 0f);
+            rt.anchorMax = new Vector2(f, 1f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = Vector2.zero;
+            rt.sizeDelta = new Vector2(2f, -4f);
+        }
+    }
+
+    /// <summary>바 위쪽 절반에 옅은 흰빛을 덮어 유리처럼 반들거리게 한다.</summary>
+    private void AddGloss(Transform bar)
+    {
+        var gloss = MakeImage(bar, "Gloss", new Color(1f, 1f, 1f, 0.09f));
+        var rt = gloss.rectTransform;
+        rt.anchorMin = new Vector2(0f, 0.52f);
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = new Vector2(2f, 0f);
+        rt.offsetMax = new Vector2(-2f, -2f);
+    }
+
+    /// <summary>부모 전체를 채우되 좌우로 padding만큼 물린다.</summary>
+    private static void StretchInside(RectTransform rt, float padding)
+    {
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = new Vector2(padding, 0f);
+        rt.offsetMax = new Vector2(-padding, 0f);
     }
 
     private Image MakeImage(Transform parent, string name, Color color)
