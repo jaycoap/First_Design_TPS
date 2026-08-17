@@ -41,6 +41,15 @@ public static class BossFx
         return beam;
     }
 
+    /// <summary>할퀸 자리에 남는 발톱 자국(평행한 호 세 줄). Play로 한 번씩 터뜨린다.</summary>
+    public static ClawSlash BuildClawSlash(float scale, Color color)
+    {
+        var go = new GameObject("BossClawSlash");
+        var slash = go.AddComponent<ClawSlash>();
+        slash.Init(scale, color);
+        return slash;
+    }
+
     /// <summary>돌진 경로를 바닥에 그리는 예고선(가장자리 두 줄 = 위험 폭 + 중앙선).</summary>
     public static RushPath BuildRushPath(float scale, Color color)
     {
@@ -112,21 +121,22 @@ public static class BossFx
             NeutralizeScale(go.transform);
             var tr = go.AddComponent<TrailRenderer>();
             tr.sharedMaterial = GunFx.MakeTracerMaterial();
-            tr.time = 0.16f;
-            tr.startWidth = 0.05f * scale;
+            tr.time = 0.22f;                 // 조금 더 길게 남아 호가 이어져 보인다
+            tr.startWidth = 0.11f * scale;   // 0.05는 이 스케일에서 실오라기처럼 보였다
             tr.endWidth = 0f;
-            tr.numCapVertices = 2;
-            tr.minVertexDistance = 0.01f * scale;
+            tr.numCapVertices = 3;
+            tr.minVertexDistance = 0.008f * scale;
             tr.autodestruct = false;
             tr.shadowCastingMode = ShadowCastingMode.Off;
             tr.receiveShadows = false;
             tr.emitting = false;
 
             var grad = new Gradient();
-            Color hot = Color.Lerp(color, Color.white, 0.25f);
+            Color hot = Color.Lerp(color, Color.white, 0.2f);
+            // 손끝 세 줄이 겹쳐 더해지므로 알파를 낮게 — 겹친 자리가 하얗게 뭉치지 않게
             grad.SetKeys(
                 new[] { new GradientColorKey(hot, 0f), new GradientColorKey(color, 1f) },
-                new[] { new GradientAlphaKey(0.9f, 0f), new GradientAlphaKey(0f, 1f) });
+                new[] { new GradientAlphaKey(0.55f, 0f), new GradientAlphaKey(0f, 1f) });
             tr.colorGradient = grad;
 
             trails.Add(tr);
@@ -238,7 +248,8 @@ public static class BossFx
             _phase += freq * Time.deltaTime;
             float wobble = 0.7f + 0.3f * Mathf.Sin(_phase * Mathf.PI * 2f);
 
-            float size = _scale * Mathf.Lerp(0.1f, 0.42f, Charge) * wobble * _fade;
+            // 충전 구체도 "곧 쏜다"는 경고다 — 차오를수록 확실히 커지게 한다
+            float size = _scale * Mathf.Lerp(0.14f, 0.62f, Charge) * wobble * _fade;
             size *= 1f + _burstBoost * 1.8f;
             _core.localScale = Vector3.one * size;
 
@@ -289,8 +300,8 @@ public static class BossFx
         private const float CoreWidth = 0.7f;    // 흰 코어
         private const float GlowWidth = 2.4f;    // 바깥 발광
         private const float HaloWidth = 4.6f;    // 가장 바깥 후광 — 멀리서도 광선의 존재가 보인다
-        private const float GuideWidth = 0.24f;  // 발사 전 예고선
-        private const float LockWidth = 0.5f;    // 조준 고정 경고선
+        private const float GuideWidth = 0.42f;  // 발사 전 예고선
+        private const float LockWidth = 0.9f;    // 조준 고정 경고선
 
         // 겹쳐 더해지는 세 층의 알파(합 ≈ 1.0). 이 합이 커지면 색이 잘려 흰색이 된다.
         private const float CoreAlpha = 0.5f;
@@ -327,7 +338,8 @@ public static class BossFx
 
             // 맥동: 충전이 진행될수록 4Hz → 14Hz로 빨라진다(임박 신호).
             // 바닥값을 높게 잡아 가장 옅은 순간에도 선이 사라져 보이지 않게 한다.
-            float pulse = 0.78f + 0.22f * Mathf.Sin(Time.time * Mathf.Lerp(4f, 14f, alpha) * Mathf.PI * 2f);
+            // 맥동 폭을 좁혀 가장 옅은 순간에도 거의 밝기를 유지한다(85~100%)
+            float pulse = 0.85f + 0.15f * Mathf.Sin(Time.time * Mathf.Lerp(4f, 14f, alpha) * Mathf.PI * 2f);
 
             SetLine(_guide, from, to);
             Color c = Color.Lerp(_color, Color.white, 0.08f + 0.15f * alpha);
@@ -339,7 +351,7 @@ public static class BossFx
             if (locked)
             {
                 SetLine(_lock, from, to);
-                float blink = 0.65f + 0.35f * Mathf.Abs(Mathf.Sin(Time.time * 18f));
+                float blink = 0.8f + 0.2f * Mathf.Abs(Mathf.Sin(Time.time * 18f));
                 Color lc = Color.Lerp(_color, Color.white, 0.45f); // 보라를 유지한 밝은 경고색
                 lc.a = blink;
                 _lock.startColor = lc;
@@ -421,7 +433,7 @@ public static class BossFx
     /// </summary>
     public class RushPath : MonoBehaviour
     {
-        private LineRenderer _left, _right, _center;
+        private LineRenderer _band, _left, _right, _center;
         private float _scale;
         private Color _color;
 
@@ -431,10 +443,13 @@ public static class BossFx
         {
             _scale = scale;
             _color = color;
+            // 통로 전체를 옅게 칠하는 띠. 가장자리 선만으로는 "어디까지 위험한지"가
+            // 한눈에 안 들어와서, 바닥을 면으로 깔고 그 위에 선을 얹는다.
+            _band = NewLine(transform, "Band", color, 1f);
             _left = NewLine(transform, "EdgeL", color, 0.18f * scale);
             _right = NewLine(transform, "EdgeR", color, 0.18f * scale);
             _center = NewLine(transform, "Center", Color.Lerp(color, Color.white, 0.25f), 0.1f * scale);
-            _left.useWorldSpace = _right.useWorldSpace = _center.useWorldSpace = true;
+            _band.useWorldSpace = _left.useWorldSpace = _right.useWorldSpace = _center.useWorldSpace = true;
         }
 
         /// <summary>from→to 경로를 반폭 halfWidth로 그린다. alpha 0~1.</summary>
@@ -449,19 +464,27 @@ public static class BossFx
             // 맥동: 돌진이 임박할수록 빨라진다(바닥값을 높여 늘 또렷하게 보이도록)
             float pulse = 0.78f + 0.22f * Mathf.Sin(Time.time * Mathf.Lerp(5f, 16f, alpha) * Mathf.PI * 2f);
 
+            // 바닥 띠: 통로 폭 그대로 칠한다. 알파는 낮게 — 위에 선 세 개가 가산으로
+            // 더해지므로 높이면 겹친 자리가 하얗게 뭉갠다.
+            Color band = _color;
+            band.a = alpha * pulse * 0.3f;
+            SetPath(_band, from, to, band, halfWidth * 2f);
+
+            // 띠 위에 더해지는 몫이라 알파를 아낀다(굵기로 보이게 하고 밝기는 낮춘다)
             Color edge = Color.Lerp(_color, Color.white, 0.08f + 0.12f * alpha);
-            edge.a = alpha * pulse;
-            float edgeWidth = 0.18f * _scale * (0.9f + alpha * 1.6f);
+            edge.a = alpha * pulse * 0.8f;
+            float edgeWidth = 0.3f * _scale * (0.9f + alpha * 1.6f);
             SetPath(_left, from + side, to + side, edge, edgeWidth);
             SetPath(_right, from - side, to - side, edge, edgeWidth);
 
             Color mid = Color.Lerp(_color, Color.white, 0.3f);
-            mid.a = alpha * pulse * 0.9f;
-            SetPath(_center, from, to, mid, 0.1f * _scale * (0.9f + alpha * 2f));
+            mid.a = alpha * pulse * 0.7f;
+            SetPath(_center, from, to, mid, 0.18f * _scale * (0.9f + alpha * 2f));
         }
 
         public void Hide()
         {
+            if (_band != null) _band.enabled = false;
             if (_left != null) _left.enabled = false;
             if (_right != null) _right.enabled = false;
             if (_center != null) _center.enabled = false;
@@ -499,6 +522,113 @@ public static class BossFx
             _bolts.Emit(14);
             _ring.Emit(2);
             if (_light != null) _light.Pulse();
+        }
+    }
+
+    /// <summary>
+    /// 할퀸 자국. 손끝 트레일(<see cref="ClawTrail"/>)이 "팔이 지나간 길"이라면,
+    /// 이쪽은 그 순간 허공에 <b>새겨지는 발톱 자국</b>이다 — 평행한 호 세 줄이 한 번에 나타났다가
+    /// 빠르게 사라져 "베였다"는 인상을 만든다.
+    ///
+    /// 세 줄은 스윙 평면의 법선 방향으로 조금씩 어긋나 있어 발톱 간격처럼 보이고,
+    /// 굵기는 가운데가 가장 두꺼운 곡선이라 양 끝이 날카롭게 빠진다.
+    /// </summary>
+    public class ClawSlash : MonoBehaviour
+    {
+        private const int Streaks = 3;   // 발톱 자국 수
+        private const int Steps = 18;    // 호를 몇 점으로 그릴지
+        private const float Life = 0.26f;
+
+        private LineRenderer[] _lines;
+        private float _scale, _life;
+        private Color _color;
+
+        public GameObject Root => gameObject;
+
+        internal void Init(float scale, Color color)
+        {
+            _scale = scale;
+            _color = color;
+
+            // 가운데가 두껍고 양 끝이 뾰족한 곡선 — 베고 지나간 자국의 형태
+            var width = new AnimationCurve(
+                new Keyframe(0f, 0.15f), new Keyframe(0.45f, 1f), new Keyframe(1f, 0.1f));
+
+            _lines = new LineRenderer[Streaks];
+            for (int i = 0; i < Streaks; i++)
+            {
+                var lr = NewLine(transform, $"Streak{i}", color, 0.09f * scale);
+                lr.useWorldSpace = true;
+                lr.positionCount = Steps;
+                lr.numCapVertices = 4;
+                lr.widthCurve = width;
+                _lines[i] = lr;
+            }
+        }
+
+        /// <summary>
+        /// center를 중심으로 fromDir → toDir 로 훑는 호를 그린다.
+        /// radius는 발톱이 지나간 반지름(보스 사거리에 맞추면 판정과 눈이 일치한다).
+        /// </summary>
+        public void Play(Vector3 center, Vector3 fromDir, Vector3 toDir, float radius)
+        {
+            if (_lines == null) return;
+            if (fromDir.sqrMagnitude < 1e-6f || toDir.sqrMagnitude < 1e-6f) return;
+
+            fromDir.Normalize();
+            toDir.Normalize();
+
+            // 스윙 평면의 법선 — 이 방향으로 세 줄을 어긋내면 발톱 간격이 된다
+            Vector3 normal = Vector3.Cross(fromDir, toDir);
+            if (normal.sqrMagnitude < 1e-6f) normal = Vector3.up;
+            normal.Normalize();
+
+            float spacing = 0.12f * radius;
+
+            for (int s = 0; s < Streaks; s++)
+            {
+                var lr = _lines[s];
+                Vector3 offset = normal * ((s - (Streaks - 1) * 0.5f) * spacing);
+                // 줄마다 반지름을 살짝 달리해 자국이 완전히 평행하지 않게(손가락 길이 차이)
+                float r = radius * (1f - s * 0.06f);
+
+                for (int i = 0; i < Steps; i++)
+                {
+                    float t = i / (float)(Steps - 1);
+                    Vector3 dir = Vector3.Slerp(fromDir, toDir, t).normalized;
+                    lr.SetPosition(i, center + dir * r + offset);
+                }
+                lr.enabled = true;
+            }
+            _life = Life;
+        }
+
+        public void Hide()
+        {
+            _life = 0f;
+            if (_lines == null) return;
+            foreach (var lr in _lines) if (lr != null) lr.enabled = false;
+        }
+
+        private void LateUpdate()
+        {
+            if (_life <= 0f) return;
+
+            _life -= Time.deltaTime;
+            float k = Mathf.Clamp01(_life / Life);
+            if (k <= 0f) { Hide(); return; }
+
+            // 빠르게 옅어지며 가늘어진다 — 자국이 허공에서 지워지는 느낌
+            Color c = Color.Lerp(_color, Color.white, 0.25f);
+            c.a = k * k * 0.8f;
+            float w = 0.09f * _scale * Mathf.Lerp(0.35f, 1.2f, k);
+
+            foreach (var lr in _lines)
+            {
+                if (lr == null) continue;
+                lr.startColor = lr.endColor = c;
+                lr.widthMultiplier = w;
+            }
         }
     }
 

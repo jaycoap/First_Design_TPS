@@ -30,6 +30,7 @@ public class BossMeteor : MonoBehaviour
     private Transform _body;         // 낙하체 머리(꼬리/광원 부착, 스케일 1)
     private GameObject _glow;        // 빛나는 판(빌보드)
     private Material _bodyMat;
+    private LineRenderer _fill;      // 착탄 범위를 통째로 칠하는 원판(선보다 훨씬 잘 읽힌다)
     private LineRenderer _ring;      // 착탄 반경(고정)
     private LineRenderer _closing;   // 중심으로 조여드는 카운트다운 링
     private LineRenderer _column;    // 하늘 → 착탄점 빛기둥
@@ -77,6 +78,11 @@ public class BossMeteor : MonoBehaviour
         Color hot = Color.Lerp(color, Color.white, 0.15f);
         const float BodyAlpha = 0.6f;
         const float TrailAlpha = 0.45f;
+
+        // 착탄 범위를 통째로 칠하는 원판. 반지름 r/2 원을 굵기 r로 그리면 원판이 채워진다 —
+        // 얇은 선은 이 스케일(반경 30cm 남짓)에서 화면상 몇 픽셀이라 눈에 안 들어온다.
+        // 가장 먼저 만들어야 링·기둥이 그 위에 겹쳐 그려진다.
+        _fill = MakeRing("Fill");
 
         // 착탄 예고 링(바닥에 살짝 띄워 z-파이팅 방지) — 반지름은 스케일로 준다
         _ring = MakeRing("Warning");
@@ -205,21 +211,30 @@ public class BossMeteor : MonoBehaviour
             // 맥동 바닥값을 높여(0.65) 가장 옅은 순간에도 링이 지워지지 않게 한다.
             float freq = Mathf.Lerp(3f, 20f, t);
             float pulse = 0.65f + 0.35f * Mathf.Abs(Mathf.Sin(_timer * freq));
+
+            // 원판: 위험 구역 전체를 옅게 칠한다. 알파를 낮게 두는 이유는 가산 블렌딩이라
+            // 원판 위에 링·기둥이 더해지기 때문 — 높이면 겹친 자리가 하얗게 뭉갠다.
+            Color fill = _color;
+            fill.a = Mathf.Lerp(0.16f, 0.4f, t) * pulse;
+            SetRing(_fill, _radius * 0.5f, _radius, fill);
+
+            // 선 알파는 원판 위에 더해지는 몫이라 낮춘다 — 1.0으로 두면 원판과 겹친
+            // 링 자리가 다시 하얗게 뭉갠다(가산 누적). 굵기로 눈에 띄게 하고 밝기는 아낀다.
             Color warn = Color.Lerp(_color, Color.white, 0.12f * t);
-            warn.a = pulse;
-            SetRing(_ring, _radius, 0.26f * _k * (1f + t * 1.5f), warn);
+            warn.a = pulse * 0.75f;
+            SetRing(_ring, _radius, 0.45f * _k * (1f + t * 1.5f), warn);
 
             // 카운트다운 링: 반지름이 착탄 순간 0이 되도록 조여든다(남은 시간이 눈에 보인다)
             Color close = Color.Lerp(_color, Color.white, 0.25f);
-            close.a = 0.6f + 0.4f * t;
-            SetRing(_closing, _radius * (1f - t), 0.2f * _k * (1f + t), close);
+            close.a = (0.7f + 0.3f * t) * 0.8f;
+            SetRing(_closing, _radius * (1f - t), 0.34f * _k * (1f + t), close);
 
             // 빛기둥: 착탄점 위로 곧게 서서 떨어질수록 진해진다(멀리서도 위험 지점이 보인다)
             Color col = _color;
-            col.a = Mathf.Lerp(0.3f, 0.85f, t) * pulse;
+            col.a = Mathf.Lerp(0.35f, 0.9f, t) * pulse;
             _column.startColor = col;
             _column.endColor = new Color(col.r, col.g, col.b, col.a * 0.3f);
-            _column.startWidth = _column.endWidth = 0.5f * _radius * (0.7f + t);
+            _column.startWidth = _column.endWidth = 0.8f * _radius * (0.7f + t);
 
             if (t >= 1f) Impact();
             return;
@@ -261,6 +276,7 @@ public class BossMeteor : MonoBehaviour
         _state = State.Impacted;
         _timer = 0f;
 
+        if (_fill != null) _fill.enabled = false;
         if (_ring != null) _ring.enabled = false;
         if (_closing != null) _closing.enabled = false;
         // 레이저 강우는 빛기둥이 곧 '떨어지는 레이저' 본체다 → 끄지 않고 Update가 내리꽂는다

@@ -83,8 +83,12 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     [SerializeField] private float meleeComboInterval = 0.16f;
     [Tooltip("연타 1대당 피해 배율. 여러 번 맞으므로 한 대의 무게는 낮춘다(Melee Damage × 이 값).")]
     [SerializeField, Range(0.1f, 1f)] private float meleeComboDamageScale = 0.55f;
-    [Tooltip("마지막 마무리 일격의 피해/사거리/전진 배율")]
+    [Tooltip("마지막 마무리 일격의 피해/전진 배율")]
     [SerializeField] private float meleeFinisherScale = 1.6f;
+    [Tooltip("마무리 일격의 <b>사거리</b> 배율. 피해 배율과 따로 두는 이유:\n" +
+             "하나로 묶으면 마무리가 세지는 동시에 사거리도 60% 늘어나, 팔이 닿지도 않는\n" +
+             "거리에서 맞는 판정이 난다. 크게 휘두르는 만큼만 아주 조금 넓힌다.")]
+    [SerializeField] private float meleeFinisherRangeScale = 1.15f;
 
     [Header("돌진 할퀴기 (중거리)")]
     [Tooltip("이 거리보다 멀어야 돌진한다. 너무 가까우면 그냥 할퀴는 편이 자연스럽다.")]
@@ -281,6 +285,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     private BossFx.Beam _beam;
     private BossFx.Flash _flash;
     private BossFx.ClawTrail _claw, _clawLeft;
+    private BossFx.ClawSlash _clawSlash; // 할퀸 순간 허공에 새겨지는 발톱 자국
     private BossFx.RushPath _rushPath;   // 돌진 예비동작 중 바닥에 그려지는 통로
     private GunFx.ImpactFx _impact;
     private ArenaWall _arena;            // 아레나(낙하 방지 벽) — 텔레포트 자리 제한에 쓴다
@@ -487,6 +492,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         if (_beamImpact != null && _beamImpact.Root != null) Destroy(_beamImpact.Root);
         if (_muzzleFx != null && _muzzleFx.Root != null) Destroy(_muzzleFx.Root);
         if (_rushPath != null && _rushPath.Root != null) Destroy(_rushPath.Root);
+        if (_clawSlash != null && _clawSlash.Root != null) Destroy(_clawSlash.Root);
         if (_flash != null && _flash.Root != null) Destroy(_flash.Root);
         AbortCutscene(); // 보스가 사라져도 조작 잠금은 남지 않게
         if (Active == this) Active = null;
@@ -503,6 +509,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         _beamImpact = GunFx.BuildImpact(_k * 3f, bossColor);
         _muzzleFx = GunFx.BuildMuzzleFlash(null, _k * 2.5f, bossColor);
         _rushPath = BossFx.BuildRushPath(_k, bossColor);
+        _clawSlash = BossFx.BuildClawSlash(_k, bossColor);
         if (_rig != null)
         {
             // 연타는 양팔을 번갈아 쓰므로 궤적도 양쪽에 붙인다
@@ -725,6 +732,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         float strikeTime = meleeStrike * (finisher ? 1.25f : 1f);
         float damage = meleeDamage * meleeComboDamageScale * scale;
 
+        bool slashed = false;
         for (float t = 0f; t < strikeTime; t += Time.deltaTime)
         {
             float k = Mathf.Clamp01(t / strikeTime);
@@ -737,8 +745,19 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
             SetAnimSpeed(0f);
             ApplyGravity(transform.forward * (meleeLunge * _k * (finisher ? 1.3f : 1f)));
 
+            // 발톱 자국: 팔이 정면을 지나기 직전에 한 번 새긴다(판정 순간과 맞물린다).
+            // 반지름을 실제 판정 사거리에 맞춰야 "보이는 만큼 맞는다"가 성립한다.
+            if (!slashed && ease > 0.25f)
+            {
+                slashed = true;
+                float reach = meleeRange * _k * 1.1f * (finisher ? meleeFinisherRangeScale : 1f);
+                _clawSlash?.Play(BodyCenter(),
+                                 SwingDir(startYaw, 0.5f), SwingDir(endYaw, -0.25f),
+                                 reach * (finisher ? 1f : 0.9f));
+            }
+
             // 팔이 정면을 지나는 구간에서 한 번만 판정
-            if (!hit && ease > 0.3f && TryMeleeHit(damage, scale)) hit = true;
+            if (!hit && ease > 0.3f && TryMeleeHit(damage, finisher)) hit = true;
             yield return null;
         }
         claw?.SetEmitting(false);
@@ -751,7 +770,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         => (Quaternion.AngleAxis(yawDeg, Vector3.up) * transform.forward + Vector3.up * pitch).normalized;
 
     /// <summary>할퀴기 한 대의 명중 판정. rangeScale은 마무리 일격에서 사거리를 조금 넓힌다.</summary>
-    private bool TryMeleeHit(float damage, float rangeScale)
+    private bool TryMeleeHit(float damage, bool finisher)
     {
         if (_targetT == null) return false;
 
@@ -760,13 +779,16 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         to.y = 0f;
         float dist = to.magnitude;
 
-        // 판정 여유는 10%까지만 — 예전 25%는 눈에 보이는 팔 길이보다 한참 멀리서도 맞았다
-        if (dist > meleeRange * _k * 1.1f * rangeScale) return false;
+        // 판정 여유는 10%까지만 — 예전 25%는 눈에 보이는 팔 길이보다 한참 멀리서도 맞았다.
+        // 마무리도 사거리는 거의 그대로다(피해만 세진다) — 예전엔 1.6배로 늘어나,
+        // 돌진으로 지나친 자리에서 팔이 닿지도 않는데 맞는 판정이 났다.
+        float range = meleeRange * _k * 1.1f * (finisher ? meleeFinisherRangeScale : 1f);
+        if (dist > range) return false;
         if (heightGap > _cc.height * Mathf.Abs(transform.lossyScale.y)) return false;
         if (Vector3.Angle(transform.forward, to) > meleeAngle * 0.5f) return false;
 
         Vector3 point = _targetT.position + Vector3.up * (0.9f * _k);
-        DamagePlayer(damage, point, strong: rangeScale > 1f);
+        DamagePlayer(damage, point, strong: finisher);
         return true;
     }
 
@@ -855,6 +877,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         // --- 3) 마무리: 미끄러지며 양팔을 X자로 교차해 후려친다 ---
         // 발톱이 지나가는 소리라 여기는 할퀴기 쪽(BossSwing)을 그대로 쓴다
         const float CrossTime = 0.18f;
+        bool crossed = false;
         GameSfx.PlayAt(Sfx.BossSwing, BodyCenter(), pitch: 0.9f);
         for (float t = 0f; t < CrossTime; t += Time.deltaTime)
         {
@@ -867,6 +890,14 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
 
             SetAnimSpeed(0f);
             ApplyGravity(dir * (speed * (1f - ease) * 0.5f)); // 관성으로 미끄러지며 정지
+
+            // 교차하는 순간 X자로 겹치는 발톱 자국을 새긴다(오른팔 → 왼팔 순서로 한 번씩)
+            if (!crossed && ease > 0.35f)
+            {
+                crossed = true;
+                float reach = rushRadius * _k;
+                _clawSlash?.Play(BodyCenter(), SwingDir(14f, 0.1f), SwingDir(-75f, -0.2f), reach);
+            }
 
             // 스쳐 지나간 직후라도 발톱이 실제로 지나가는 순간 한 번 더 판정
             if (!hit && ease > 0.4f && TryRushHit()) hit = true;
@@ -882,11 +913,19 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         {
             _nextRush = Time.time + rushCooldown;
 
-            // 지나쳐 달렸다면 등을 진 채 허공을 후려치게 되므로, 짧게 돌아선다
-            for (float t = 0f; t < 0.18f; t += Time.deltaTime)
+            // 돌진은 목표를 지나쳐 달리므로(rushOvershoot) 멈춘 자리는 이미 사거리 밖이다.
+            // 그대로 휘두르면 허공을 치거나, 사거리에 여유를 준 만큼만 억지로 맞는 판정이 난다.
+            // 돌아서서 사거리 안으로 파고든 다음에 연타를 시작한다.
+            for (float t = 0f; t < 0.5f; t += Time.deltaTime)
             {
                 TrackTarget(turnSpeed * 2.5f);
-                HoldStill();
+
+                Vector3 toTarget = _targetT != null ? _targetT.position - transform.position : Vector3.zero;
+                toTarget.y = 0f;
+                if (toTarget.magnitude <= meleeRange * _k) { HoldStill(); break; }
+
+                SetAnimSpeed(WalkAnimSpeed);
+                ApplyGravity(toTarget.normalized * (walkSpeed * _k * 2f));
                 yield return null;
             }
 
@@ -2215,6 +2254,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
         DespawnClones();
         _claw?.SetEmitting(false);
         _clawLeft?.SetEmitting(false);
+        _clawSlash?.Hide();
         _rushPath?.Hide();
         SetHidden(false);
     }
@@ -2222,8 +2262,20 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra
     private void OnDrawGizmosSelected()
     {
         float k = Application.isPlaying ? _k : 1f;
+
+        // 근접: 실제 판정 사거리를 그린다(설정값이 아니라 여유·마무리 배율까지 곱한 값).
+        // 안쪽 원 = 일반 타, 바깥 원 = 마무리 타.
         Gizmos.color = new Color(1f, 0.4f, 0.2f, 0.7f);
-        Gizmos.DrawWireSphere(transform.position, meleeRange * k);
+        Gizmos.DrawWireSphere(transform.position, meleeRange * k * 1.1f);
+        Gizmos.color = new Color(1f, 0.25f, 0.1f, 0.5f);
+        Gizmos.DrawWireSphere(transform.position, meleeRange * k * 1.1f * meleeFinisherRangeScale);
+
+        // 정면 판정 각도(meleeAngle)의 좌우 경계
+        Gizmos.color = new Color(1f, 0.6f, 0.3f, 0.6f);
+        float half = meleeAngle * 0.5f;
+        float reach = meleeRange * k * 1.1f * meleeFinisherRangeScale;
+        Gizmos.DrawRay(transform.position, Quaternion.AngleAxis(half, Vector3.up) * transform.forward * reach);
+        Gizmos.DrawRay(transform.position, Quaternion.AngleAxis(-half, Vector3.up) * transform.forward * reach);
         Gizmos.color = new Color(1f, 0.8f, 0.2f, 0.5f); // 돌진 발동 거리대
         Gizmos.DrawWireSphere(transform.position, rushMinRange * k);
         Gizmos.DrawWireSphere(transform.position, rushMaxRange * k);
