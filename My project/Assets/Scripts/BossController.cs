@@ -28,6 +28,12 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
 {
     public enum Phase { Intro, Idle, Chase, Melee, Rush, Laser, Teleport, Judgment, Aerial, Dead }
 
+    /// <summary>
+    /// 리플레이가 다루는 '한 번의 패턴'. 무엇을 언제 시작했는지 이 단위로 기록해 두었다가,
+    /// 시간역행 뒤 그대로 다시 재생한다.
+    /// </summary>
+    public enum PatternKind { Melee, Rush, Laser, OrbBurst, SkyRain, Teleport, Aerial, Judgment }
+
     [Header("참조")]
     [Tooltip("비우면 씬의 PlayerStats를 자동으로 찾는다.")]
     [SerializeField] private Transform target;
@@ -231,6 +237,12 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     [Tooltip("진짜 보스의 충전 색. 분신(보스 색)과 확실히 달라야 찾을 수 있다.")]
     [SerializeField] private Color judgmentRealColor = new Color(1f, 0.42f, 0.08f);
 
+    [Header("시간역행 대응")]
+    [Tooltip("되감기가 끝난 직후 보스가 숨을 고르는 시간(초).\n" +
+             "0 = 과거의 그 순간에 그대로 이어붙는다(권장 — 패턴이 어긋나지 않는다).\n" +
+             "0보다 크면 되돌아온 보스의 모든 패턴이 그만큼 뒤로 밀려, 과거와 완전히 같지는 않게 된다.")]
+    [SerializeField] private float rewindRecoverDelay = 0f;
+
     [Header("이펙트")]
     [Tooltip("레이저/텔레포트/발톱에 공통으로 쓰이는 보스 색")]
     [SerializeField] private Color bossColor = new Color(0.75f, 0.3f, 1f);
@@ -274,7 +286,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private Vector3 _aimDir;
 
     // 분신 처형 패턴
-    private bool _judgmentActive, _judgmentDone, _judgmentBroken;
+    // _judgmentDone   : 패턴이 '시작'되었다(중복 발동 방지 걸쇠)
+    // _judgmentCleared: 패턴을 '끝까지 치렀다'. 되감기로 문을 다시 열지 판단하는 기준은 이쪽이다.
+    private bool _judgmentActive, _judgmentDone, _judgmentCleared, _judgmentBroken;
     private float _judgmentEndTime;
     private int _judgmentHits;           // 이번 패턴에서 누적한 명중 횟수(협공 + 일반 사격)
     private int _judgmentIgnoreSession;  // 패턴 시작 시점에 이미 날아오던 협공(무효)
@@ -289,6 +303,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private BossFx.RushPath _rushPath;   // 돌진 예비동작 중 바닥에 그려지는 통로
     private GunFx.ImpactFx _impact;
     private ArenaWall _arena;            // 아레나(낙하 방지 벽) — 텔레포트 자리 제한에 쓴다
+    private TimeRewindable _rewind;      // 되감기 재생 중인지 확인용(그 동안은 피해도 패턴도 받지 않는다)
+    private uint _rngState = 0x9E3779B9u; // 패턴 전용 난수 상태(스냅샷에 함께 실려 되감기로 되돌아간다)
+    private float _patternHoldUntil;     // 되감기 직후 숨 고르는 구간(이 시각까지 패턴을 시작하지 않는다)
     private GunFx.ImpactFx _beamImpact;  // 레이저 착탄 전용(굵은 광선에 맞춘 큰 폭발)
     private GunFx.MuzzleFx _muzzleFx;    // 발사 순간 손끝에서 터지는 방출광
     private BossFx.ChargeOrb _realOrb;   // 분신 처형 전용(진짜만 다른 색)
@@ -357,6 +374,11 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private void Awake()
     {
         _cc = GetComponent<CharacterController>();
+        _rewind = GetComponent<TimeRewindable>();
+
+        // 패턴 난수의 씨앗은 플레이마다 다르게 뽑는다(0은 xorshift가 멈추므로 피한다).
+        // 이 씨앗만 다르고, 한 판 안에서는 되감기로 언제든 같은 흐름을 재현한다.
+        _rngState = (uint)Random.Range(1, int.MaxValue);
         if (animator == null) animator = GetComponentInChildren<Animator>();
 
         // 절차적 팔 포즈는 휴머노이드 본을 다루므로 Animator와 같은 오브젝트에 있어야 한다
@@ -552,12 +574,28 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         // 벽은 실제 콜라이더라 밖에서는 걸어 들어올 수 없어, 그대로 두면 영영 굳어 있는다.
         if (!IsInsideArena(transform.position, 0f) && TryPullInsideArena()) return;
 
+        // --- 되감기 직후 유예: 과거 자리로 막 돌아온 프레임에 곧바로 후려치지 않는다 ---
+        if (Time.time < _patternHoldUntil)
+        {
+            FaceDirection(dir, turnSpeed);
+            HoldStill();
+            return;
+        }
+
+        // --- 시간역행 리플레이: 되돌아간 그 순간에 '맞고 있던' 패턴 하나만 처음부터 다시 친다 ---
+        // 거리도 쿨다운도 보지 않고 그 한 번은 반드시 나온다. 그 뒤로는 평소 판단에 맡긴다.
+        if (StepReplay()) return;
+
+        // --- 분신 처형 감시: 원래는 피격이 여는 패턴이지만, 시간역행이 코루틴을 끊어
+        //     '시작만 하고 치르지 못한' 상태로 남을 수 있다. 그때는 여기서 다시 연다 ---
+        if (TryStartJudgment()) return;
+
         // --- 공중 처형: 분신 처형을 넘긴 뒤에만 열린다. 거리와 무관하게 최우선 ---
-        // 체력 조건을 함께 보는 이유: 시간역행으로 체력이 되돌아가면 분신 처형은 이미
-        // 끝난 것으로 남는데, 그 상태에서 체력이 넉넉한데도 마지막 패턴이 나오면 어색하다.
+        // 체력 조건을 함께 보는 이유: 시간역행으로 체력이 되돌아가면, 이미 치른 분신 처형은
+        // 다시 열리지 않는데 그 상태에서 체력이 넉넉한데도 마지막 패턴이 나오면 어색하다.
         if (Time.time >= _nextAerial && _health <= maxHealth * judgmentHealthRatio)
         {
-            StartCoroutine(AerialBarrageRoutine());
+            StartPattern(PatternKind.Aerial);
             return;
         }
 
@@ -567,7 +605,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             _farTimer += Time.deltaTime;
             if (_farTimer >= teleportDelay && Time.time >= _teleportRetryTime)
             {
-                StartCoroutine(TeleportRoutine());
+                StartPattern(PatternKind.Teleport);
                 return;
             }
         }
@@ -580,7 +618,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         {
             if (Time.time >= _nextMelee)
             {
-                StartCoroutine(MeleeRoutine());
+                StartPattern(PatternKind.Melee);
                 return;
             }
             // 재사용 대기 중엔 밀어붙이지 않고 마주 본 채 버틴다(연속 타격 방지)
@@ -592,7 +630,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         // --- 하늘 레이저 강우(2단계~): 붙어 있지 않을 때 넓게 압박한다 ---
         if (Stage >= 2 && dist >= skyRainMinRange * _k && Time.time >= _nextSkyRain)
         {
-            StartCoroutine(SkyRainRoutine());
+            StartPattern(PatternKind.SkyRain);
             return;
         }
 
@@ -600,7 +638,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         if (Stage >= 2 && dist >= rushMinRange * _k && dist <= rushMaxRange * _k
             && Time.time >= _nextRush && HasLineOfSight())
         {
-            StartCoroutine(RushRoutine());
+            StartPattern(PatternKind.Rush);
             return;
         }
 
@@ -608,7 +646,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         if (dist <= laserRange * _k && dist >= laserMinRange * _k
             && Time.time >= _nextLaser && HasLineOfSight())
         {
-            StartCoroutine(Stage >= 3 ? OrbBurstRoutine() : LaserRoutine());
+            StartPattern(Stage >= 3 ? PatternKind.OrbBurst : PatternKind.Laser);
             return;
         }
 
@@ -621,6 +659,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     /// <summary>BossRig가 팔 포즈를 적용한 뒤(실행 순서 50) 손끝 기준 이펙트를 갱신한다.</summary>
     private void LateUpdate()
     {
+        // 진행 중이던 패턴이 끝났으면 그 시각을 대본에 적어 둔다(되감기 시 '그때 하던 중이었나' 판단용)
+        if (!_busy) CloseRunningEvent(Time.time);
+
         // 되감기로 되돌릴 수 있도록 패턴 쿨다운을 계속 기록해 둔다
         RecordPatternState();
 
@@ -1586,7 +1627,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         point = default;
         if (_targetT == null) return false;
 
-        Vector2 offset = Random.insideUnitCircle * (meteorSpread * _k);
+        Vector2 offset = RngInsideUnitCircle() * (meteorSpread * _k);
         Vector3 candidate = _targetT.position + new Vector3(offset.x, 0f, offset.y);
 
         // 아레나가 있으면 벽 안쪽으로 끌어당긴다(밖에 떨어져 봐야 보이지도 않는다)
@@ -1684,7 +1725,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         Vector3 right = Vector3.Cross(Vector3.up, fwd);
         float d = teleportAppearDistance * _k;
 
-        bool behindFirst = Random.value < teleportBehindChance;
+        bool behindFirst = RngValue() < teleportBehindChance;
         var candidates = new[]
         {
             p + (behindFirst ? -fwd : fwd) * d,
@@ -1761,6 +1802,8 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     {
         _busy = true;
         _judgmentActive = true;
+        _judgmentDone = true;       // 여기서 걸어 둔다 — 어느 경로로 불려도 두 번 시작되지 않게
+        _judgmentCleared = false;   // 끝까지 치러야 true. 중간에 끊기면 다시 열린다.
         _judgmentBroken = false;
         _judgmentHits = 0;
         _phase = Phase.Judgment;
@@ -1777,8 +1820,8 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         // --- 1) 배치: 아레나 밖 원주에 자리를 잡고 그중 하나에 진짜가 선다 ---
         int total = Mathf.Max(2, judgmentCloneCount + 1);
         ResolveJudgmentRing(out Vector3 center, out float ring);
-        int realIndex = Random.Range(0, total);
-        float angleOffset = Random.value * 360f;
+        int realIndex = RngRange(0, total);
+        float angleOffset = RngValue() * 360f;
 
         _flash?.Spawn(BodyCenter());
         SetHidden(true);
@@ -1859,6 +1902,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         // 분신 처형이 끝난 직후부터 '공중 처형'이 열린다 — 첫 발동은 조금 뒤로 미뤄
         // 파훼 보상(경직 동안의 반격)을 챙길 틈을 준다.
         _nextAerial = Time.time + aerialFirstDelay;
+
+        // 여기까지 와야 '치렀다'. 이 줄 위 어디서 끊기든(되감기 등) 패턴은 다시 열린다.
+        _judgmentCleared = true;
     }
 
     /// <summary>파훼 성공: 분신이 일제히 흩어지고 진짜는 잠시 무방비로 굳는다.</summary>
@@ -1889,10 +1935,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         var shooters = new List<BossClone>(_clones);
         for (int i = shooters.Count - 1; i > 0; i--)
         {
-            int j = Random.Range(0, i + 1);
+            int j = RngRange(0, i + 1);
             (shooters[i], shooters[j]) = (shooters[j], shooters[i]);
         }
-        int realSlot = Random.Range(0, shooters.Count + 1);
+        int realSlot = RngRange(0, shooters.Count + 1);
 
         for (int i = 0; i <= shooters.Count; i++)
         {
@@ -1989,6 +2035,11 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     {
         if (_phase == Phase.Dead) return;
 
+        // 되감기 재생 중(몸이 과거를 되짚는 동안)에는 피해도 패턴도 받지 않는다.
+        // 여기서 깎은 체력은 되감기가 끝나며 과거 값으로 덮어써지고,
+        // 이때 시작된 패턴은 되감기가 끝나는 순간 통째로 끊겨 '시작만 한' 상태로 남는다.
+        if (_rewind != null && _rewind.IsRewinding) return;
+
         // 분신 처형 중에는 체력이 깎이지 않는다 — '진짜'에게 명중시킨 횟수만 쌓이고,
         // judgmentBreakHits발을 채우는 순간 파훼된다. 협공 한 발로 즉시 끝나지 않으므로
         // 진짜를 찾아낸 뒤에도 남은 시간 동안 협공과 사격을 함께 퍼부어야 한다.
@@ -2015,13 +2066,26 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         if (_health <= 0f) { Die(); return; }
 
         // 체력 30% — 분신 처형 패턴(1회)
-        if (!_judgmentDone && !_judgmentActive && _health <= maxHealth * judgmentHealthRatio)
-        {
-            _judgmentDone = true;
-            StopAllCoroutines();
-            ResetAttackState();
-            StartCoroutine(JudgmentRoutine());
-        }
+        TryStartJudgment();
+    }
+
+    /// <summary>
+    /// 분신 처형을 지금 시작할 수 있으면 시작한다(true = 시작함).
+    /// 피격 시점과 매 프레임 감시 양쪽에서 부르므로, 시간역행이 패턴을 끊어
+    /// '시작만 하고 치르지 못한' 상태로 남아도 조건이 맞으면 반드시 다시 열린다.
+    /// </summary>
+    private bool TryStartJudgment()
+    {
+        if (_judgmentDone || _judgmentActive) return false;
+        if (_phase == Phase.Dead || _phase == Phase.Intro) return false;
+        if (_health <= 0f || _health > maxHealth * judgmentHealthRatio) return false;
+        if (_rewind != null && _rewind.IsRewinding) return false;  // 되감기 중엔 몸이 내 것이 아니다
+        if (Time.time < _patternHoldUntil) return false;            // 되감기 직후 유예
+
+        StopAllCoroutines();
+        ResetAttackState();
+        StartPattern(PatternKind.Judgment);
+        return true;
     }
 
     private void Die()
@@ -2029,6 +2093,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         AbortCutscene(); // 컷신 도중 죽는 구성이라도 잠금은 풀린다
         StopAllCoroutines();
         ResetAttackState();
+        CancelReplay();
         _phase = Phase.Dead;
         SetAnimSpeed(0f);
         GameSfx.PlayAt(Sfx.BossDeath, BodyCenter());
@@ -2061,6 +2126,150 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         }
     }
 
+    // ---------- 패턴 난수(되감기 재현용) ----------
+
+    /// <summary>
+    /// 패턴이 뽑는 모든 무작위 값 — 텔레포트가 등 뒤로 갈지, 분신 중 몇 번째가 진짜인지,
+    /// 일제 사격 순서, 운석 낙하점 — 은 전부 이 상태 하나에서 나온다.
+    /// 상태를 패턴 스냅샷에 함께 기록해 두었다가 되감기 때 되돌리므로,
+    /// 과거로 돌아간 보스는 <b>그때와 똑같은 선택</b>을 똑같은 순서로 다시 한다.
+    ///
+    /// UnityEngine.Random은 씬 전체가 공유하는 난수라, 그 사이 다른 스크립트가 몇 번 뽑았는지에
+    /// 따라 결과가 밀려 재현이 깨진다 — 그래서 보스 전용 난수를 따로 둔다.
+    /// 반대로 재현할 필요가 없는 연출(카메라 흔들림·효과음 피치)은 그대로 UnityEngine.Random을 쓴다.
+    /// </summary>
+    private uint NextRng()
+    {
+        // xorshift32 — 상태가 uint 하나뿐이라 스냅샷에 그대로 실을 수 있다(0이 되면 멈추므로 씨앗은 1 이상).
+        uint x = _rngState;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        _rngState = x;
+        return x;
+    }
+
+    /// <summary>0 이상 1 미만(UnityEngine.Random.value 대체).</summary>
+    private float RngValue() => (NextRng() >> 8) * (1f / 16777216f);
+
+    /// <summary>minInclusive 이상 maxExclusive 미만(UnityEngine.Random.Range(int, int) 대체).</summary>
+    private int RngRange(int minInclusive, int maxExclusive)
+        => maxExclusive <= minInclusive
+            ? minInclusive
+            : minInclusive + (int)(NextRng() % (uint)(maxExclusive - minInclusive));
+
+    /// <summary>반지름 1인 원 안의 한 점(UnityEngine.Random.insideUnitCircle 대체).</summary>
+    private Vector2 RngInsideUnitCircle()
+    {
+        float angle = RngValue() * Mathf.PI * 2f;
+        float radius = Mathf.Sqrt(RngValue()); // 제곱근을 씌워야 원 안에 고르게 퍼진다
+        return new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
+    }
+
+    // ---------- 패턴 리플레이(되감기 후 과거 재생) ----------
+
+    /// <summary>기록된 패턴 한 건. endT는 진행 중이면 float.MaxValue.</summary>
+    private struct PatternEvent
+    {
+        public PatternKind kind;
+        public float startT, endT;
+    }
+
+    /// <summary>기록 보관량. 되감기 5초 안에 이보다 많은 패턴이 들어갈 일은 없다.</summary>
+    private readonly PatternEvent[] _eventBuf = new PatternEvent[32];
+    private int _eventHead = -1, _eventCount, _runningEvent = -1;
+
+    private bool _replayPending;         // 되감아 간 순간에 맞고 있던 패턴을 아직 다시 치지 않았다
+    private PatternKind _replayKind;
+
+    /// <summary>되감기로 예약된 '다시 칠 패턴'이 아직 남았는가.</summary>
+    public bool ReplayActive => _replayPending;
+
+    /// <summary>
+    /// 패턴을 시작하는 유일한 통로. 여기를 거쳐야 '무엇을 언제 시작했는지'가 대본에 남는다.
+    /// </summary>
+    private void StartPattern(PatternKind kind)
+    {
+        RecordPatternEvent(kind);
+
+        switch (kind)
+        {
+            case PatternKind.Melee:    StartCoroutine(MeleeRoutine()); break;
+            case PatternKind.Rush:     StartCoroutine(RushRoutine()); break;
+            case PatternKind.Laser:    StartCoroutine(LaserRoutine()); break;
+            case PatternKind.OrbBurst: StartCoroutine(OrbBurstRoutine()); break;
+            case PatternKind.SkyRain:  StartCoroutine(SkyRainRoutine()); break;
+            case PatternKind.Teleport: StartCoroutine(TeleportRoutine()); break;
+            case PatternKind.Aerial:   StartCoroutine(AerialBarrageRoutine()); break;
+            case PatternKind.Judgment: StartCoroutine(JudgmentRoutine()); break;
+        }
+    }
+
+    private void RecordPatternEvent(PatternKind kind)
+    {
+        CloseRunningEvent(Time.time);
+
+        _eventHead = (_eventHead + 1) % _eventBuf.Length;
+        if (_eventCount < _eventBuf.Length) _eventCount++;
+        _eventBuf[_eventHead] = new PatternEvent { kind = kind, startT = Time.time, endT = float.MaxValue };
+        _runningEvent = _eventHead;
+    }
+
+    /// <summary>진행 중이던 패턴의 종료 시각을 적는다.</summary>
+    private void CloseRunningEvent(float endT)
+    {
+        if (_runningEvent < 0) return;
+        _eventBuf[_runningEvent].endT = endT;
+        _runningEvent = -1;
+    }
+
+    /// <summary>
+    /// 되감기 직후, 되돌아간 그 순간에 <b>진행 중이던</b> 패턴 하나를 '다시 칠 것'으로 예약한다.
+    ///
+    /// 그 뒤의 패턴까지 대본으로 이어 붙이지는 않는다. 과거의 선택은 그때의 거리에서 나온 것이라,
+    /// 이번엔 플레이어가 다르게 움직이면 어긋난 장면이 된다 —
+    /// 과거엔 '레이저 뒤에 플레이어가 붙어서' 근접 할퀴기가 나왔는데,
+    /// 이번엔 멀찍이 물러난 허공을 그대로 후려치는 식이다.
+    /// 되짚어야 할 것은 '내가 당한 그 패턴' 하나면 충분하고, 그다음은 지금의 거리를 보고 고르는 게 맞다.
+    /// </summary>
+    private void ArmReplay(float pastTime)
+    {
+        _replayPending = false;
+
+        for (int i = 0; i < _eventCount; i++)   // 최신 기록부터 훑는다
+        {
+            var e = _eventBuf[(_eventHead - i + _eventBuf.Length * 2) % _eventBuf.Length];
+            if (e.startT > pastTime) continue;  // 되돌아간 시점 뒤에 시작한 것 = 아직 오지 않은 일
+            if (e.endT <= pastTime) break;      // 그 시점엔 이미 끝나 있었다 = 다시 칠 것이 없다
+
+            _replayPending = true;
+            _replayKind = e.kind;
+            Debug.Log($"[Boss] 시간역행 — 그때 맞고 있던 패턴({e.kind})을 처음부터 다시 친다.");
+            break;
+        }
+
+        // 되감긴 뒤의 기록은 '오지 않은 미래'라 무효
+        _eventHead = -1;
+        _eventCount = 0;
+        _runningEvent = -1;
+    }
+
+    /// <summary>예약된 패턴을 지금 시작한다(시작했으면 true). 거리·쿨다운은 보지 않는다.</summary>
+    private bool StepReplay()
+    {
+        if (!_replayPending) return false;
+        _replayPending = false;
+
+        // 이미 치른 분신 처형이라면 다시 열지 않는다(되감기 뒤 피격으로 먼저 열렸을 수 있다)
+        if (_replayKind == PatternKind.Judgment && (_judgmentDone || _judgmentActive)) return false;
+
+        StartPattern(_replayKind);
+        return true;
+    }
+
+    /// <summary>예약을 파기하고 평소 AI로 돌려놓는다(사망 등).</summary>
+    private void CancelReplay() => _replayPending = false;
+
     // ---------- 시간역행 연동 ----------
 
     // ---- 패턴 상태 되감기 ----
@@ -2071,8 +2280,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     {
         public float t;
         public float melee, laser, rush, skyRain, aerial, meteor;
-        public float farTimer;   // 텔레포트 발동까지 '멀어진 채 버틴 시간' 누적값
-        public bool judgmentDone;
+        public float farTimer;       // 텔레포트 발동까지 '멀어진 채 버틴 시간' 누적값
+        public uint rng;             // 그 시점의 패턴 난수 상태(다음에 뽑을 값이 정해진다)
+        public bool judgmentCleared; // 그 시점에 분신 처형을 '끝까지 치른' 상태였는가
         public bool valid;
     }
 
@@ -2100,7 +2310,8 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             aerial = _nextAerial,
             meteor = _nextMeteorTime,
             farTimer = _farTimer,
-            judgmentDone = _judgmentDone,
+            rng = _rngState,
+            judgmentCleared = _judgmentCleared,
             valid = true,
         };
     }
@@ -2114,7 +2325,12 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     /// </summary>
     public void OnRewoundTo(float pastTime)
     {
-        if (_patternCount == 0) return;
+        // 되감기는 이 컴포넌트를 끄면서 진행 중이던 패턴 코루틴을 통째로 끊는다(OnDisable).
+        // 끊긴 자리에 남은 연출·판정·분신을 여기서 한 번 더 확실히 씻어 낸다.
+        CloseRunningEvent(Time.time);
+        ResetAttackState();
+        if (_phase != Phase.Dead) _phase = Phase.Idle;
+        _verticalVelocity = 0f;
 
         for (int i = 0; i < _patternCount; i++)
         {
@@ -2130,8 +2346,15 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             _nextMeteorTime = Rearm(s.meteor, s.t);
             _farTimer = s.farTimer;  // 이건 누적 경과시간이라 그대로 되돌린다
 
-            // 분신 처형은 1회성이라, 그 이전으로 돌아갔다면 다시 쓸 수 있어야 한다
-            _judgmentDone = s.judgmentDone;
+            // 난수까지 그 시점으로 되돌린다 — 이게 있어야 되감기 뒤의 보스가 과거와 같은 선택을 한다
+            // (진짜 분신의 자리, 일제 사격 순서, 텔레포트 방향, 운석 낙하점이 전부 그대로 재현된다).
+            if (s.rng != 0u) _rngState = s.rng;
+
+            // 분신 처형은 1회성이지만, 닫히는 기준은 '시작했는가'가 아니라 '끝까지 치렀는가'다.
+            // 돌아간 시점에 아직 치르지 못한 상태였다면(진행 중이었거나 시작 전) 다시 연다 —
+            // 되감기가 코루틴만 끊고 걸쇠는 걸어 둔 채 놔두면 3페 진입 패턴이 영영 사라진다.
+            _judgmentCleared = s.judgmentCleared;
+            _judgmentDone = s.judgmentCleared;
             break;
         }
 
@@ -2139,6 +2362,16 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         _patternHead = -1;
         _patternCount = 0;
         _nextPatternSample = Time.time;
+
+        // 분신 처형/공중 처형 도중이었다면 몸이 아레나 밖(혹은 허공)에 서 있다.
+        // 그대로 두면 벽에 막혀 걸어 들어오지 못하거나 허공에서 추락한다.
+        if (!IsInsideArena(transform.position, 0f)) TryPullInsideArena();
+
+        // 돌아온 직후 한 박자 쉬었다가 다시 움직인다(끊긴 패턴이 같은 프레임에 이어지지 않게)
+        _patternHoldUntil = Time.time + Mathf.Max(0f, rewindRecoverDelay);
+
+        // 그리고 그때 맞고 있던 패턴 하나를 다시 겪게 한다
+        ArmReplay(pastTime);
     }
 
     /// <summary>과거 시점에 남아 있던 대기 시간을 지금 기준으로 다시 심는다.</summary>
@@ -2260,7 +2493,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             else
             {
                 _cam.AddShake(strong ? 0.6f : 0.3f, 0.35f);
-                _cam.AddRoll(Random.Range(-4f, 4f));
+                _cam.AddRoll(Random.Range(-4f, 4f)); // 연출용 — 재현할 필요가 없어 전역 난수 그대로
             }
         }
         if (!dodged) _impact?.Spawn(point, normal);
@@ -2335,6 +2568,8 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         _aimLocked = false;
         _farTimer = 0f;
         _judgmentActive = false;
+        _judgmentBroken = false;
+        _judgmentHits = 0;
         if (_orb != null) { _orb.Visible = false; _orb.Charge = 0f; }
         if (_realOrb != null) { _realOrb.Visible = false; _realOrb.Charge = 0f; }
         if (_beam != null) _beam.Hide();
