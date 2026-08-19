@@ -46,6 +46,8 @@ public class BossRig : MonoBehaviour
     private ArmPose[] _smooth = new ArmPose[2];  // 실제로 적용하는 값(요청을 따라 부드럽게 이동)
     private float _spineTwist, _spineWeight;
     private float _smoothTwist, _smoothTwistWeight;
+    private float _spineLean, _leanWeight;
+    private float _smoothLean, _smoothLeanWeight;
 
     // 본 캐시
     private readonly Transform[] _upper = new Transform[2];
@@ -128,6 +130,16 @@ public class BossRig : MonoBehaviour
         _spineWeight = Mathf.Clamp01(weight);
     }
 
+    /// <summary>
+    /// 상체를 앞뒤로 젖힌다(도). 양수 = 뒤로 젖혀 가슴을 펴는 자세(포효).
+    /// 몸의 축(transform.right) 기준 월드 회전이라 본의 로컬 축과 무관하게 동작한다.
+    /// </summary>
+    public void LeanSpine(float degrees, float weight)
+    {
+        _spineLean = degrees;
+        _leanWeight = Mathf.Clamp01(weight);
+    }
+
     // ---------- 적용 ----------
 
     private void LateUpdate()
@@ -144,6 +156,13 @@ public class BossRig : MonoBehaviour
 
         if (_smoothTwistWeight > 0.001f && _chest != null)
             _chest.rotation = Quaternion.AngleAxis(_smoothTwist * _smoothTwistWeight, transform.up) * _chest.rotation;
+
+        _smoothLean = Mathf.MoveTowards(_smoothLean, _spineLean, 720f * dt);
+        _smoothLeanWeight = Mathf.MoveTowards(_smoothLeanWeight, _leanWeight, weightBlendSpeed * dt);
+
+        // transform.right 기준으로 음의 각을 주면 상체가 뒤로 젖혀진다(가슴을 펴는 자세)
+        if (_smoothLeanWeight > 0.001f && _chest != null)
+            _chest.rotation = Quaternion.AngleAxis(-_smoothLean * _smoothLeanWeight, transform.right) * _chest.rotation;
 
         for (int a = 0; a < 2; a++)
         {
@@ -190,6 +209,7 @@ public class BossRig : MonoBehaviour
             _pose[a].point = 0f;
         }
         _spineWeight = 0f;
+        _leanWeight = 0f;
     }
 
     /// <summary>

@@ -109,6 +109,70 @@ public static class BossFx
         return new Flash(core, bolts, ring, pulse);
     }
 
+    /// <summary>
+    /// 포효(기 모으기) 오라. 발밑에서 위로 솟구치는 기둥 + 천천히 떠오르는 불티 + 점광원.
+    /// SetPower(0~1)로 매 프레임 세기를 올리면 기가 차오르는 것처럼 보이고,
+    /// Burst()로 해방하는 순간의 충격파를 터뜨린다.
+    /// anchor(보스)에 붙으므로 보스가 사라질 때 같이 정리된다.
+    /// </summary>
+    public static RoarAura BuildRoarAura(Transform anchor, float scale, Color color)
+    {
+        Color hot = Color.Lerp(color, Color.white, 0.35f);
+        Color gone = new Color(color.r, color.g, color.b, 0f);
+
+        var root = new GameObject("BossRoarAura");
+        root.transform.SetParent(anchor, false);
+        root.transform.localPosition = Vector3.zero;
+        NeutralizeScale(root.transform); // 본 스케일 상쇄 — 이펙트 크기를 월드 미터로 다룬다
+
+        // 기둥: 발밑에서 곧게 솟구치는 기.
+        // 원뿔은 오브젝트의 +Z로 뿜으므로 -90도 눕혀 위를 보게 한다.
+        ParticleSystem column = NewSystem("AuraColumn", root.transform, loop: true);
+        column.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
+        var cMain = column.main;
+        cMain.startLifetime = new ParticleSystem.MinMaxCurve(0.30f, 0.65f);
+        cMain.startSpeed = new ParticleSystem.MinMaxCurve(4f * scale, 9f * scale);
+        cMain.startSize = new ParticleSystem.MinMaxCurve(0.05f * scale, 0.14f * scale);
+        cMain.startColor = hot;
+        cMain.maxParticles = 512;
+        SetCone(column, 10f, 0.5f * scale);
+        Stretch(column, 8f);
+        FadeOut(column, hot, gone);
+
+        // 불티: 느리게 떠올라 흩어지는 잔재 — 기둥만 있으면 너무 딱딱해 보인다
+        ParticleSystem embers = NewSystem("AuraEmbers", root.transform, loop: true);
+        embers.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
+        var eMain = embers.main;
+        eMain.startLifetime = new ParticleSystem.MinMaxCurve(0.6f, 1.2f);
+        eMain.startSpeed = new ParticleSystem.MinMaxCurve(1.2f * scale, 3.5f * scale);
+        eMain.startSize = new ParticleSystem.MinMaxCurve(0.03f * scale, 0.07f * scale);
+        eMain.startColor = color;
+        SetCone(embers, 35f, 0.9f * scale);
+        FadeOut(embers, hot, gone);
+
+        // 충격파: 해방하는 순간 바닥을 따라 퍼지는 링
+        ParticleSystem burst = NewSystem("AuraBurst", root.transform, loop: false);
+        var burstMain = burst.main;
+        burstMain.startLifetime = new ParticleSystem.MinMaxCurve(0.30f, 0.45f);
+        burstMain.startSpeed = new ParticleSystem.MinMaxCurve(6f * scale, 11f * scale);
+        burstMain.startSize = new ParticleSystem.MinMaxCurve(0.30f * scale, 0.5f * scale);
+        burstMain.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
+        burstMain.startColor = color;
+        SetCone(burst, 89f, 0.1f * scale);
+        Grow(burst, 3f);
+        FadeOut(burst, color, gone);
+
+        // 오라 광원 — 어두운 맵에서 보스 자신을 비춰 주는 역할도 한다
+        var light = root.AddComponent<Light>();
+        light.type = LightType.Point;
+        light.color = hot;
+        light.range = 10f * scale;
+        light.intensity = 0f;
+        light.shadows = LightShadows.None;
+
+        return new RoarAura(column, embers, burst, light, peakIntensity: 7f);
+    }
+
     /// <summary>손가락 끝들에 붙는 할퀴기 궤적. 강타 구간에만 켠다.</summary>
     public static ClawTrail BuildClawTrail(Transform[] tips, float scale, Color color)
     {
@@ -522,6 +586,61 @@ public static class BossFx
             _bolts.Emit(14);
             _ring.Emit(2);
             if (_light != null) _light.Pulse();
+        }
+    }
+
+    /// <summary>
+    /// 포효 오라 핸들. <see cref="SetPower"/>를 매 프레임 올려 주면 기가 차오르듯 보이고,
+    /// <see cref="Burst"/>로 해방 순간을 터뜨린다.
+    /// 세기가 0이면 방출을 멈춘다(이미 떠 있던 입자는 수명대로 사라진다).
+    /// </summary>
+    public class RoarAura
+    {
+        private readonly ParticleSystem _column, _embers, _burst;
+        private readonly Light _light;
+        private readonly float _peak;
+
+        public GameObject Root => _column != null ? _column.gameObject : null;
+
+        internal RoarAura(ParticleSystem column, ParticleSystem embers, ParticleSystem burst,
+                          Light light, float peakIntensity)
+        {
+            _column = column; _embers = embers; _burst = burst;
+            _light = light; _peak = peakIntensity;
+        }
+
+        /// <summary>기의 세기 0~1. 매 프레임 넣는다.</summary>
+        public void SetPower(float power)
+        {
+            float p = Mathf.Clamp01(power);
+            Drive(_column, 140f * p);
+            Drive(_embers, 40f * p);
+            // 광원은 제곱으로 올려 후반에 확 밝아지게 한다(차오르는 느낌)
+            if (_light != null) _light.intensity = _peak * p * p;
+        }
+
+        /// <summary>해방하는 순간의 충격파.</summary>
+        public void Burst()
+        {
+            if (_burst != null) _burst.Emit(24);
+            if (_column != null) _column.Emit(60);
+            if (_light != null) _light.intensity = _peak * 1.6f;
+        }
+
+        private static void Drive(ParticleSystem ps, float rate)
+        {
+            if (ps == null) return;
+            var emission = ps.emission;
+            emission.rateOverTime = rate;
+
+            if (rate > 0.5f)
+            {
+                if (!ps.isPlaying) ps.Play();
+            }
+            else if (ps.isPlaying)
+            {
+                ps.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+            }
         }
     }
 

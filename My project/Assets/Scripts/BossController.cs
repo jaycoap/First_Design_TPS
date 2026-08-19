@@ -58,6 +58,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     [SerializeField] private float introHoldTime = 1.6f;
     [Tooltip("모습을 드러낸 뒤 포효하며 버티는 시간(초)")]
     [SerializeField] private float introRevealTime = 2.2f;
+    [Tooltip("기를 끌어올리며 포효하는 시간(초). 이 구간에 오라가 솟고 화면 떨림이 커진다.")]
+    [SerializeField] private float introRoarTime = 1.8f;
+    [Tooltip("포효할 때 가슴을 젖히는 각도(도). 클수록 하늘을 보고 우는 자세가 된다.")]
+    [SerializeField] private float introLeanAngle = 24f;
 
     [Header("체력 단계 (패턴 해금)")]
     [Tooltip("체력이 이 비율 아래로 떨어지면 2단계 — 돌진과 '하늘 레이저 강우'가 열린다.")]
@@ -301,6 +305,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private BossFx.ClawTrail _claw, _clawLeft;
     private BossFx.ClawSlash _clawSlash; // 할퀸 순간 허공에 새겨지는 발톱 자국
     private BossFx.RushPath _rushPath;   // 돌진 예비동작 중 바닥에 그려지는 통로
+    private BossFx.RoarAura _roarAura;   // 등장 포효 때 발밑에서 솟구치는 기
     private GunFx.ImpactFx _impact;
     private ArenaWall _arena;            // 아레나(낙하 방지 벽) — 텔레포트 자리 제한에 쓴다
     private TimeRewindable _rewind;      // 되감기 재생 중인지 확인용(그 동안은 피해도 패턴도 받지 않는다)
@@ -505,6 +510,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         CutsceneActive = false;
         _cam?.SetCinematicFocus(null);
         SetHidden(false);
+        _roarAura?.SetPower(0f);   // 컷신이 중간에 끊겨도 오라가 계속 타오르지 않게
         if (_phase == Phase.Intro) _phase = Phase.Idle;
     }
 
@@ -532,6 +538,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         _muzzleFx = GunFx.BuildMuzzleFlash(null, _k * 2.5f, bossColor);
         _rushPath = BossFx.BuildRushPath(_k, bossColor);
         _clawSlash = BossFx.BuildClawSlash(_k, bossColor);
+        _roarAura = BossFx.BuildRoarAura(transform, _k, bossColor);
         if (_rig != null)
         {
             // 연타는 양팔을 번갈아 쓰므로 궤적도 양쪽에 붙인다
@@ -1064,29 +1071,71 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         _cam?.SetCinematicFocus(transform);
         yield return new WaitForSeconds(introHoldTime);
 
-        // --- 2) 등장: 섬광과 함께 모습을 드러내며 포효한다 ---
+        // --- 2) 등장: 섬광과 함께 모습을 드러낸다 ---
         _flash?.Spawn(BodyCenter());
         SetHidden(false);
         GameSfx.PlayAt(Sfx.BossRoar, BodyCenter());
         if (_cam != null) { _cam.AddShake(0.9f, 0.6f); _cam.AddFovKick(6f); }
 
-        // 위협하듯 양팔을 벌린 자세를 잡았다가 서서히 내린다
-        for (float t = 0f; t < introRevealTime; t += Time.deltaTime)
+        // --- 3) 포효: 주먹을 쥐고 양팔을 아래·뒤로 붙인 채 가슴을 젖혀 힘을 끌어올린다 ---
+        // 팔을 벌리는 위협 자세보다, 기를 짜내는 자세가 "이제 시작이다"를 훨씬 잘 전달한다.
+        // 오라가 발밑에서 솟고 화면 떨림이 점점 커지다가, 마지막에 한 번에 터진다.
+        float roar = Mathf.Max(0.3f, introRoarTime);
+        float nextShake = 0f;
+        for (float t = 0f; t < roar; t += Time.deltaTime)
         {
-            float k = Mathf.Clamp01(t / introRevealTime);
-            float w = k < 0.4f ? k / 0.4f : 1f - (k - 0.4f) / 0.6f; // 들었다가 내린다
+            float k = Mathf.Clamp01(t / roar);
+            float w = Mathf.Clamp01(k / 0.25f);                              // 앞 1/4에 걸쳐 자세를 잡는다
+            float power = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(k / 0.75f)); // 기가 차오른다
 
-            _rig.AimArm(BossRig.Arm.Right, SwingDir(70f, 0.45f), w);
-            _rig.AimArm(BossRig.Arm.Left, SwingDir(-70f, 0.45f), w);
-            _rig.CurlHand(BossRig.Arm.Right, 0.8f, w);
-            _rig.CurlHand(BossRig.Arm.Left, 0.8f, w);
+            // 팔은 아래·뒤로 뻗고 주먹을 꽉 쥔다
+            _rig.AimArm(BossRig.Arm.Right, SwingDir(150f, -1.6f), w);
+            _rig.AimArm(BossRig.Arm.Left, SwingDir(-150f, -1.6f), w);
+            _rig.CurlHand(BossRig.Arm.Right, 1f, w);
+            _rig.CurlHand(BossRig.Arm.Left, 1f, w);
+            // 가슴을 젖혀 하늘을 보고 운다
+            _rig.LeanSpine(introLeanAngle * w, w);
+
+            _roarAura?.SetPower(power);
+
+            // 떨림은 간격을 두고 조금씩 — 매 프레임 넣으면 누적돼 화면이 망가진다
+            if (_cam != null && Time.time >= nextShake)
+            {
+                _cam.AddShake(0.10f + 0.45f * power, 0.25f);
+                nextShake = Time.time + 0.18f;
+            }
 
             TrackTarget(turnSpeed * 0.8f);
             HoldStill();
             yield return null;
         }
 
-        // --- 3) 카메라를 플레이어에게 돌려주고 전투 시작 ---
+        // --- 4) 해방: 충격파와 함께 자세를 푼다 ---
+        _flash?.Spawn(BodyCenter());
+        _roarAura?.Burst();
+        GameSfx.PlayAt(Sfx.BossRoar, BodyCenter(), pitch: 0.85f);
+        if (_cam != null) { _cam.AddShake(1.3f, 0.7f); _cam.AddFovKick(10f); }
+
+        float settle = Mathf.Max(0.2f, introRevealTime * 0.5f);
+        for (float t = 0f; t < settle; t += Time.deltaTime)
+        {
+            float w = 1f - Mathf.Clamp01(t / settle);
+
+            _rig.AimArm(BossRig.Arm.Right, SwingDir(150f, -1.6f), w);
+            _rig.AimArm(BossRig.Arm.Left, SwingDir(-150f, -1.6f), w);
+            _rig.CurlHand(BossRig.Arm.Right, 1f, w);
+            _rig.CurlHand(BossRig.Arm.Left, 1f, w);
+            _rig.LeanSpine(introLeanAngle * w, w);
+
+            _roarAura?.SetPower(w * 0.5f);
+
+            TrackTarget(turnSpeed);
+            HoldStill();
+            yield return null;
+        }
+        _roarAura?.SetPower(0f);
+
+        // --- 5) 카메라를 플레이어에게 돌려주고 전투 시작 ---
         _cam?.SetCinematicFocus(null);
         yield return new WaitForSeconds(0.5f); // 카메라가 돌아오는 동안은 아직 잠금
 
@@ -1213,6 +1262,14 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     {
         y = 0f;
         float up = 20f * _k;
+
+        // 기준 높이보다 이만큼 위에 있는 면은 발판이 아니라 천장·구조물로 본다.
+        // 닫힌 실내 맵에서는 위에서 쏜 레이가 천장에도 맞는데, 그냥 '가장 높은 히트'를
+        // 고르면 천장을 바닥으로 착각해 보스가 천장에 올라가 버린다.
+        // 한 몸 높이까지는 인정한다 — 단이나 턱 위로 올려놓는 건 정상 동작이다.
+        float bodyHeight = _cc != null ? _cc.height * Mathf.Abs(transform.lossyScale.y) : 1.8f * _k;
+        float ceiling = at.y + Mathf.Max(bodyHeight, 0.5f * _k);
+
         int n = Physics.RaycastNonAlloc(at + Vector3.up * up, Vector3.down, _hitBuf,
                                         up * 2f, obstacleMask, QueryTriggerInteraction.Ignore);
         bool found = false;
@@ -1223,6 +1280,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             if (h.collider == null) continue;
             if (h.collider.transform.IsChildOf(transform)) continue;
             if (_targetT != null && h.collider.transform.IsChildOf(_targetT)) continue;
+            if (h.point.y > ceiling) continue;
             if (h.point.y > best) { best = h.point.y; found = true; }
         }
         if (found) y = best;
@@ -1641,23 +1699,11 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             if (flat.magnitude > max) candidate = c + flat.normalized * max;
         }
 
-        // 바닥 높이 확정(자기 몸/플레이어는 무시)
-        float up = 12f * _k;
-        int n = Physics.RaycastNonAlloc(candidate + Vector3.up * up, Vector3.down, _hitBuf,
-                                        up * 2f, obstacleMask, QueryTriggerInteraction.Ignore);
-        float best = float.MinValue;
-        bool found = false;
-        for (int i = 0; i < n; i++)
-        {
-            var h = _hitBuf[i];
-            if (h.collider == null) continue;
-            if (h.collider.transform.IsChildOf(transform)) continue;
-            if (_targetT != null && h.collider.transform.IsChildOf(_targetT)) continue;
-            if (h.point.y > best) { best = h.point.y; found = true; }
-        }
-        if (!found) return false;
+        // 바닥 높이 확정. TryFindFloor를 쓴다 — 여기서 따로 "가장 높은 히트"를 고르면
+        // 닫힌 실내에서 천장을 바닥으로 잡아 낙하물이 천장에 떨어진다.
+        if (!TryFindFloor(candidate, out float groundY)) return false;
 
-        point = new Vector3(candidate.x, best, candidate.z);
+        point = new Vector3(candidate.x, groundY, candidate.z);
         return true;
     }
 
@@ -1984,7 +2030,15 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         if (arena != null)
         {
             center = arena.transform.position;
-            radius = arena.Radius * judgmentRingScale;
+            // 분신은 아레나 '밖'에 서야 하므로 가장 먼 방향(바깥 반지름)을 기준으로 잡는다.
+            // 원이 아닌 맵에서 안쪽 반지름을 쓰면 긴 쪽 분신이 아레나 안에 들어와 버린다.
+            radius = arena.OuterRadius * judgmentRingScale;
+
+            // 다만 벽으로 막힌 실내 맵에서는 '아레나 밖'에 설 자리가 아예 없다 —
+            // 그대로 두면 분신 전원이 벽 속에 파묻혀 패턴이 통째로 안 보인다.
+            // 링 위에 실제로 바닥이 있는지 확인하고, 없으면 아레나 안쪽 가장자리로 당긴다.
+            if (!RingHasFloor(center, radius))
+                radius = arena.Radius * 0.9f;
         }
         else
         {
@@ -1992,6 +2046,21 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             center.y = transform.position.y;
             radius = Mathf.Max(_teleportDist, teleportDistance * _k) * 1.5f;
         }
+    }
+
+    /// <summary>그 반지름의 원 위에 분신이 설 만한 바닥이 실제로 있는가(과반이면 인정).</summary>
+    private bool RingHasFloor(Vector3 center, float radius)
+    {
+        const int samples = 8;
+        int ok = 0;
+        for (int i = 0; i < samples; i++)
+        {
+            float a = 360f / samples * i * Mathf.Deg2Rad;
+            Vector3 p = center + new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a)) * radius;
+            p.y = center.y;
+            if (TryFindFloor(p, out _)) ok++;
+        }
+        return ok * 2 > samples;
     }
 
     private void DespawnClones()

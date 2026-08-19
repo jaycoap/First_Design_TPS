@@ -60,6 +60,30 @@ public class BossMeteor : MonoBehaviour
         return m;
     }
 
+    /// <summary>
+    /// 어느 높이에서 떨어뜨릴지. 야외라면 넉넉히 높은 데서 떨어져야 "하늘에서 온다"가 되지만,
+    /// 천장이 있는 실내에서 그 높이를 그대로 쓰면 낙하도 빛기둥도 천장에 가려 아무것도 안 보인다.
+    /// 착탄점 위로 레이를 쏴 실제 머리 위 여유를 재고, 그 안쪽에서 떨어뜨린다.
+    /// (사람·보스는 지나칠 수 있어야 하므로 CharacterController를 가진 것은 무시한다)
+    /// </summary>
+    private static float ResolveFallHeight(Vector3 impactPoint, float k)
+    {
+        float wanted = 14f * k;
+
+        var hits = Physics.RaycastAll(impactPoint + Vector3.up * (0.05f * k), Vector3.up,
+                                      wanted, ~0, QueryTriggerInteraction.Ignore);
+        float headroom = wanted;
+        foreach (var h in hits)
+        {
+            if (h.collider.GetComponentInParent<CharacterController>() != null) continue; // 캐릭터는 통과
+            headroom = Mathf.Min(headroom, h.distance);
+        }
+
+        // 천장에 딱 붙이면 빛기둥 끝이 천장에 파묻힌다 — 조금 띄운다.
+        // 너무 낮아지면 예고가 사라지므로 최소 높이는 지킨다.
+        return Mathf.Max(2.5f * k, headroom * 0.85f);
+    }
+
     private void Init(Vector3 impactPoint, float k, Color color,
                       float damage, float radius, float fallTime, Transform target)
     {
@@ -71,7 +95,7 @@ public class BossMeteor : MonoBehaviour
         _fallTime = Mathf.Max(0.15f, fallTime);
         _target = target;
         _targetDamage = target != null ? target.GetComponentInParent<IDamageable>() : null;
-        _start = impactPoint + Vector3.up * (14f * k);
+        _start = impactPoint + Vector3.up * ResolveFallHeight(impactPoint, k);
 
         // 글로우 판과 꼬리가 겹치는 지점은 가산으로 더해진다 — 알파를 낮춰 두지 않으면
         // 두 층의 합이 1을 넘어 채널이 잘리고 보라색이 흰색으로 뭉갠다.
