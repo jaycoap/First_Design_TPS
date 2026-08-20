@@ -82,13 +82,21 @@ public class ThirdPersonCamera : MonoBehaviour
     // 컷신(대상 주위를 도는 카메라)
     private Transform _focus;
     private float _focusWeight;     // 0=플레이어 시점, 1=컷신 시점
+    private float _focusSize = 1.8f; // 컷신 대상의 월드 높이 — 프레이밍의 기준자
     private float _focusAngle;      // 대상 주위를 도는 현재 각도(도)
 
     [Header("컷신 카메라")]
-    [Tooltip("컷신 대상과의 거리(월드 미터)")]
-    [SerializeField] private float cinematicDistance = 1.2f;
-    [Tooltip("컷신 대상보다 이만큼 위에서 내려다본다(월드 미터)")]
-    [SerializeField] private float cinematicHeight = 0.45f;
+    // 거리·높이를 월드 미터로 못 박아 두면 대상 크기가 바뀔 때 프레이밍이 통째로 무너진다.
+    // (이 프로젝트는 캐릭터가 0.2유닛짜리 미니어처라, 예전 값 1.2m는 키의 5.6배 거리였다.)
+    // 그래서 전부 '대상 높이의 몇 배'로 다룬다.
+    [Tooltip("컷신 대상과의 거리 = 대상 높이 x 이 배수")]
+    [SerializeField] private float cinematicDistanceScale = 2.8f;
+    [Tooltip("카메라가 대상 발밑보다 얼마나 위에 있는가 = 대상 높이 x 이 배수")]
+    [SerializeField] private float cinematicHeightScale = 1.1f;
+    [Tooltip("어디를 바라보는가(대상 발밑 기준) = 대상 높이 x 이 배수. 0.6이면 가슴께.")]
+    [SerializeField] private float cinematicAimScale = 0.6f;
+    [Tooltip("대상 높이를 못 받았을 때 가정할 크기(월드 미터)")]
+    [SerializeField] private float cinematicDefaultSubjectHeight = 1.8f;
     [Tooltip("대상 주위를 도는 속도(도/초). 느리게 돌아야 '보여주는' 느낌이 난다.")]
     [SerializeField] private float cinematicOrbitSpeed = 14f;
     [Tooltip("컷신 시점으로 들고 나는 블렌드 속도(1/초)")]
@@ -132,9 +140,15 @@ public class ThirdPersonCamera : MonoBehaviour
     /// 플레이어 시점(_yaw/_pitch)은 건드리지 않고 최종 포즈만 섞으므로,
     /// 컷신이 끝나면 원래 보던 방향 그대로 돌아온다.
     /// </summary>
-    public void SetCinematicFocus(Transform focus)
+    /// <param name="subjectHeight">
+    /// 대상의 월드 높이. 거리·높이가 전부 여기에 비례하므로, 넘겨 주면 대상이 크든 작든
+    /// 화면에서 같은 크기로 잡힌다. 0이면 사람 크기로 가정한다.
+    /// </param>
+    public void SetCinematicFocus(Transform focus, float subjectHeight = 0f)
     {
         _focus = focus;
+        if (subjectHeight > 1e-4f) _focusSize = subjectHeight;
+        else if (focus == null) _focusSize = cinematicDefaultSubjectHeight;
         if (focus != null) _focusAngle = _yaw + 150f; // 뒤쪽 비스듬한 각도에서 시작
     }
 
@@ -237,10 +251,28 @@ public class ThirdPersonCamera : MonoBehaviour
         // _yaw/_pitch를 건드리지 않으므로 컷신이 끝나면 보던 방향 그대로 돌아온다.
         if (_focusWeight > 0.001f && _focus != null)
         {
-            Vector3 look = _focus.position + Vector3.up * cinematicHeight;
-            Vector3 orbit = Quaternion.Euler(0f, _focusAngle, 0f) * Vector3.back * cinematicDistance;
-            Vector3 cinePos = look + orbit + Vector3.up * cinematicHeight;
-            Quaternion cineRot = Quaternion.LookRotation((look - cinePos).normalized);
+            float subject = Mathf.Max(_focusSize, 1e-4f);
+            Vector3 look = _focus.position + Vector3.up * (subject * cinematicAimScale);
+            Vector3 orbit = Quaternion.Euler(0f, _focusAngle, 0f)
+                          * Vector3.back * (subject * cinematicDistanceScale);
+            Vector3 cinePos = _focus.position + orbit
+                            + Vector3.up * (subject * cinematicHeightScale);
+
+            // 컷신 시점도 벽·천장에 막히면 대상 쪽으로 당긴다.
+            // 이 블록은 위쪽 벽 보정이 끝난 '뒤'에 위치를 덮어쓰므로, 여기서 따로 검사하지
+            // 않으면 좁은 실내에서 카메라가 그대로 벽 밖으로 빠져나가 맵 바깥을 비춘다.
+            Vector3 fromLook = cinePos - look;
+            float reach = fromLook.magnitude;
+            if (reach > 1e-4f)
+            {
+                Vector3 dir = fromLook / reach;
+                if (Physics.SphereCast(look, collisionRadius, dir, out RaycastHit cineHit,
+                                       reach, collisionMask, QueryTriggerInteraction.Ignore))
+                    cinePos = look + dir * cineHit.distance;
+            }
+
+            Quaternion cineRot = Quaternion.LookRotation((look - cinePos).sqrMagnitude > 1e-6f
+                ? (look - cinePos).normalized : rotation * Vector3.forward);
 
             desiredPos = Vector3.Lerp(desiredPos, cinePos, _focusWeight);
             rotation = Quaternion.Slerp(rotation, cineRot, _focusWeight);

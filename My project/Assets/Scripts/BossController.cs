@@ -146,6 +146,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     [SerializeField, Range(0f, 1f)] private float teleportArenaRatio = 0.8f;
     [Tooltip("멀어진 상태가 이 시간 이상 이어지면 (쿨다운 없이) 무조건 발동한다(초)")]
     [SerializeField] private float teleportDelay = 0.4f;
+    [Tooltip("맵 오브젝트에 막혀 이 시간 이상 제자리걸음하면 스스로 텔레포트로 빠져나온다(초). 0이면 끈다." + NewLine +
+             "텔레포트 사거리 안이라 '멀어서 쓰는 텔레포트'가 안 걸리는 거리대에서, " +
+             "다가오지 못하는 보스를 일방적으로 두들기는 상황을 막는다.")]
+    [SerializeField] private float stuckTeleportTime = 2f;
     [Tooltip("플레이어로부터 이만큼 떨어진 곳에 나타난다.")]
     [SerializeField] private float teleportAppearDistance = 2.8f;
     [Range(0f, 1f)]
@@ -221,12 +225,16 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     [Header("분신 처형 (체력 30% 패턴)")]
     [Tooltip("체력이 최대치의 이 비율 이하로 떨어지면 1회 발동한다.")]
     [SerializeField, Range(0.05f, 0.9f)] private float judgmentHealthRatio = 0.3f;
-    [Tooltip("소환할 분신 수. 진짜 보스를 포함해 총 (이 값 + 1)기가 맵 밖 원형으로 늘어선다.")]
+    [Tooltip("소환할 분신 수. 진짜 보스를 포함해 총 (이 값 + 1)기가 천장 근처에 원형으로 늘어선다.")]
     [SerializeField] private int judgmentCloneCount = 9;
     [Tooltip("일제 사격까지의 충전 시간(초). 이 안에 진짜를 찾아 협공해야 한다.")]
     [SerializeField] private float judgmentChargeTime = 6f;
-    [Tooltip("분신들이 늘어서는 원의 반지름 = 아레나 반지름 × 이 배율(맵 밖).")]
-    [SerializeField] private float judgmentRingScale = 1.3f;
+    [Tooltip("분신들이 늘어서는 원의 반지름 = 아레나 반지름 x 이 배율." + NewLine +
+             "1보다 작게 두어 아레나 '안'에 띄운다 — 벽 밖에 세우면 플레이어가 쏠 수 없다.")]
+    [SerializeField] private float judgmentRingScale = 0.75f;
+    [Tooltip("분신들이 뜨는 높이(아레나 바닥에서 월드 단위). 천장을 뚫지 않게 자동으로 낮춘다." + NewLine +
+             "이 맵 기준 0.6이 창문 조명(WinLightRed) 높이쯤이다.")]
+    [SerializeField] private float judgmentHeight = 0.6f;
     [Tooltip("분신 1기당 레이저 피해. 파훼하지 못하면 여러 발이 겹쳐 치명적이다.")]
     [SerializeField] private float judgmentDamage = 34f;
     [Tooltip("일제 사격 간격(초). 구르기 무적으로 전부 흘릴 수 없도록 넉넉히 벌린다.")]
@@ -272,6 +280,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private float _nextMelee, _nextLaser, _nextRush, _nextSkyRain;
     private float _nextAerial = float.MaxValue; // 분신 처형이 끝나야 열린다
     private float _teleportRetryTime;   // 설 자리를 못 찾았을 때의 재시도 대기
+    private float _stuckTimer;          // 걷는데 나아가지 못한 누적 시간(끼임 감지)
     private float _nextMeteorTime;      // 운석 폭풍 재사용 시각
     private float _teleportDist;        // 실제 발동 거리(월드 m) — 아레나 크기까지 반영한 값
     private float _animSpeed;           // 애니메이터 Speed(0=대기, 0.5=걷기)
@@ -327,7 +336,13 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private BossHitbox[] _hitboxes = new BossHitbox[0];
     private CharacterController _playerCc;   // 히트박스를 물리 충돌에서 뺄 때만 쓴다
 
-    private readonly RaycastHit[] _hitBuf = new RaycastHit[12];
+    /// <summary>착탄 지점을 다시 뽑아 보는 최대 횟수(바닥이 없는 자리를 피하려고).</summary>
+    private const int MeteorPickAttempts = 6;
+
+    /// <summary>Tooltip 안에서 줄을 바꾸기 위한 상수(어트리뷰트 인자는 상수식이어야 한다).</summary>
+    private const string NewLine = "\n";
+
+    private readonly RaycastHit[] _hitBuf = new RaycastHit[32];
     private readonly Collider[] _colBuf = new Collider[12];
 
     private static readonly int SpeedHash = Animator.StringToHash("Speed");
@@ -454,6 +469,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
 
         _verticalVelocity = 0f;
         IgnoreHitboxCollisions();
+
+        // 설 자리 검사(ValidateSpot)는 캡슐을 85%로 줄여서 보므로, 통과한 자리라도
+        // 실제 캡슐은 조금 겹칠 수 있다. 도착하자마자 밀어내 파묻힌 채 시작하지 않게 한다.
+        CharacterUnstick.Resolve(_cc);
     }
 
     private void IgnoreHitboxCollisions()
@@ -630,6 +649,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             }
             // 재사용 대기 중엔 밀어붙이지 않고 마주 본 채 버틴다(연속 타격 방지)
             _phase = Phase.Idle;
+            _stuckTimer = 0f;   // 코앞까지 왔으니 막힌 게 아니다
             HoldStill();
             return;
         }
@@ -661,6 +681,32 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         _phase = Phase.Chase;
         ApplyGravity(dir * (walkSpeed * _k));
         SetAnimSpeed(WalkAnimSpeed);
+        WatchStuck();
+    }
+
+    /// <summary>
+    /// 걷고 있는데 실제로 나아가지 못하면(맵 오브젝트·기둥·턱에 끼면) 스스로 텔레포트해 빠져나온다.
+    ///
+    /// 텔레포트는 원래 '너무 멀어졌을 때'만 걸리므로, 그 사거리 안쪽에서 끼면 보스는
+    /// 영영 벽을 밀며 제자리걸음만 하고 플레이어는 그것을 일방적으로 두들길 수 있다.
+    /// CharacterController.velocity 는 Move 가 실제로 밀어낸 결과라, 벽에 막히면 0에 가까워진다.
+    /// </summary>
+    private void WatchStuck()
+    {
+        if (stuckTeleportTime <= 0f) { _stuckTimer = 0f; return; }
+
+        Vector3 v = _cc.velocity;
+        v.y = 0f;   // 낙하 속도는 '나아간 것'이 아니다
+
+        // 걸으려던 속도의 이 비율도 못 내면 막힌 것으로 본다(비탈·미끄러짐엔 여유를 준다)
+        bool crawling = v.magnitude < walkSpeed * _k * 0.25f;
+        _stuckTimer = crawling ? _stuckTimer + Time.deltaTime : 0f;
+
+        if (_stuckTimer < stuckTeleportTime || Time.time < _teleportRetryTime) return;
+
+        _stuckTimer = 0f;
+        Debug.Log("[Boss] 맵에 막혀 제자리걸음 — 텔레포트로 빠져나옵니다.");
+        StartPattern(PatternKind.Teleport);
     }
 
     /// <summary>BossRig가 팔 포즈를 적용한 뒤(실행 순서 50) 손끝 기준 이펙트를 갱신한다.</summary>
@@ -1016,6 +1062,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         return Mathf.Clamp(flat.magnitude + rushOvershoot * _k, rushMinRange * _k, max);
     }
 
+    /// <summary>보스의 월드 높이(m). _k = 이 값 / 1.8 이므로 되돌려 쓴다.</summary>
+    private float BossWorldHeight => _k * 1.8f;
+
     /// <summary>바닥에 돌진 통로를 그린다(발밑에서 고정된 정면 방향으로).</summary>
     private void ShowRushPath(float alpha, float halfWidth)
     {
@@ -1068,7 +1117,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         yield return new WaitForSeconds(introDelay);
 
         // --- 1) 빈 자리를 비춘다 ---
-        _cam?.SetCinematicFocus(transform);
+        // 보스 키를 함께 넘긴다 — 컷신 거리/높이가 여기에 비례해서 잡힌다.
+        // (안 넘기면 사람 크기로 가정하는데, 이 프로젝트 보스는 0.21유닛짜리라
+        //  카메라가 키의 대여섯 배 밖 천장에 붙어 맵 바깥을 비추게 된다.)
+        _cam?.SetCinematicFocus(transform, BossWorldHeight);
         yield return new WaitForSeconds(introHoldTime);
 
         // --- 2) 등장: 섬광과 함께 모습을 드러낸다 ---
@@ -1258,20 +1310,34 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     }
 
     /// <summary>지정한 지점 아래의 바닥 높이(자기 몸/플레이어는 무시). 못 찾으면 false.</summary>
+    /// <summary>
+    /// xz 위치의 바닥을 <b>보스가 서 있는 높이</b>를 기준으로 잰다.
+    /// 아레나 오브젝트의 원점이 실제 바닥보다 한참 위에 있는 맵이 있는데(이 맵은 약 1유닛
+    /// 위다), 그 높이를 기준으로 TryFindFloor를 부르면 '기준보다 위는 무시' 규칙에
+    /// 실내 천장이 걸리지 않아 천장을 바닥으로 잡는다 — 보스가 천장 위로 올라가 버린다.
+    /// </summary>
+    private bool TryFindFloorUnderBoss(Vector3 at, out float y)
+        => TryFindFloor(new Vector3(at.x, transform.position.y, at.z), out y);
+
     private bool TryFindFloor(Vector3 at, out float y)
     {
         y = 0f;
-        float up = 20f * _k;
 
         // 기준 높이보다 이만큼 위에 있는 면은 발판이 아니라 천장·구조물로 본다.
-        // 닫힌 실내 맵에서는 위에서 쏜 레이가 천장에도 맞는데, 그냥 '가장 높은 히트'를
-        // 고르면 천장을 바닥으로 착각해 보스가 천장에 올라가 버린다.
         // 한 몸 높이까지는 인정한다 — 단이나 턱 위로 올려놓는 건 정상 동작이다.
         float bodyHeight = _cc != null ? _cc.height * Mathf.Abs(transform.lossyScale.y) : 1.8f * _k;
-        float ceiling = at.y + Mathf.Max(bodyHeight, 0.5f * _k);
+        float lift = Mathf.Max(bodyHeight, 0.5f * _k);
+        float ceiling = at.y + lift;
 
-        int n = Physics.RaycastNonAlloc(at + Vector3.up * up, Vector3.down, _hitBuf,
-                                        up * 2f, obstacleMask, QueryTriggerInteraction.Ignore);
+        // 레이는 딱 그 '인정 높이'에서 아래로 쏜다.
+        //
+        // 예전에는 20*_k 위에서 쏘고 버퍼에 담긴 것 중 조건에 맞는 최고점을 골랐는데,
+        // 천장·조명·구조물이 빽빽한 실내 맵에서는 버퍼(12칸)가 그 위쪽 히트들로 가득 차
+        // 정작 바닥이 통째로 누락됐다. RaycastNonAlloc은 결과 순서를 보장하지 않으므로
+        // '넘치면 조용히 일부가 사라지는' 형태로 실패한다 — 강우가 7발 중 2발만 떨어진 원인.
+        // 시작점을 낮추면 위쪽 구조물은 애초에 레이에 걸리지 않는다.
+        int n = Physics.RaycastNonAlloc(at + Vector3.up * lift, Vector3.down, _hitBuf,
+                                        lift + 20f * _k, obstacleMask, QueryTriggerInteraction.Ignore);
         bool found = false;
         float best = float.MinValue;
         for (int i = 0; i < n; i++)
@@ -1349,7 +1415,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         _orbOn = false;
 
         // 4) 쏟아진다. 뿌리는 동안 팔을 내리며 다음 행동으로 넘어간다
-        StartCoroutine(RainRoutine(skyRainCount, FallStyle));
+        LaunchRain(skyRainCount, FallStyle);
 
         for (float t = 0f; t < laserRecover; t += Time.deltaTime)
         {
@@ -1649,7 +1715,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             if (meteorCount > 0 && Time.time >= _nextMeteorTime)
             {
                 _nextMeteorTime = Time.time + meteorCooldown;
-                StartCoroutine(RainRoutine(meteorCount, FallStyle));
+                LaunchRain(meteorCount, FallStyle);
             }
         }
 
@@ -1667,16 +1733,26 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     /// 이동이 둔해진 상태라 그냥 걷기로는 빠져나가기 어렵고, 구르기로 회피해야 한다.
     /// 낙하물은 각자 알아서 낙하/착탄을 처리하므로 이 코루틴은 뿌리기만 한다.
     /// </summary>
-    private IEnumerator RainRoutine(int count, BossMeteor.Style style)
+    private void LaunchRain(int count, BossMeteor.Style style)
     {
+        if (_targetT == null) return;
+
+        // 한 발씩 코루틴으로 뿌리면 그 코루틴이 중간에 끊길 때(분신 처형 진입, 컴포넌트
+        // 비활성화, 사망 등 StopAllCoroutines가 걸리는 모든 경로) 나머지가 통째로 사라진다.
+        // 강우가 한두 발만 떨어지는 것을 막으려고, 전부 이 프레임에 만들어 놓고
+        // 시차만 낙하물 자신에게 맡긴다.
+        int spawned = 0;
         for (int i = 0; i < count; i++)
         {
-            if (_targetT == null) yield break;
-            if (TryPickMeteorPoint(out Vector3 point))
-                BossMeteor.Launch(point, _k, bossColor, meteorDamage, meteorRadius * _k,
-                                  meteorFallTime, _targetT, style);
-            yield return new WaitForSeconds(meteorInterval);
+            if (!TryPickMeteorPoint(out Vector3 point)) continue;
+            BossMeteor.Launch(point, _k, bossColor, meteorDamage, meteorRadius * _k,
+                              meteorFallTime, _targetT, style, meteorInterval * i);
+            spawned++;
         }
+
+        if (spawned < count)
+            Debug.LogWarning($"[Boss] 강우 {count}발 중 {spawned}발만 떨어뜨렸습니다 — " +
+                             "착탄 지점 아래에 바닥(obstacleMask)이 없습니다.");
     }
 
     /// <summary>플레이어 주변에서 실제로 바닥이 있는 착탄 지점 하나를 고른다(아레나 안으로 제한).</summary>
@@ -1685,26 +1761,41 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         point = default;
         if (_targetT == null) return false;
 
-        Vector2 offset = RngInsideUnitCircle() * (meteorSpread * _k);
-        Vector3 candidate = _targetT.position + new Vector3(offset.x, 0f, offset.y);
-
-        // 아레나가 있으면 벽 안쪽으로 끌어당긴다(밖에 떨어져 봐야 보이지도 않는다)
-        var arena = FindFirstObjectByType<ArenaWall>();
-        if (arena != null)
+        // 맵에 구멍이나 난간 밖이 있으면 뽑은 자리 아래에 바닥이 없을 수 있다.
+        // 한 번 실패했다고 그 발을 통째로 버리면 강우가 눈에 띄게 성겨지므로 다시 뽑는다.
+        // (난수 상태는 스냅샷에 실려 되감기로 복원되므로, 뽑는 횟수가 달라져도 재현은 어긋나지 않는다)
+        for (int attempt = 0; attempt < MeteorPickAttempts; attempt++)
         {
-            Vector3 c = arena.transform.position;
-            Vector3 flat = candidate - c;
-            flat.y = 0f;
-            float max = arena.Radius * 0.92f;
-            if (flat.magnitude > max) candidate = c + flat.normalized * max;
+            Vector2 offset = RngInsideUnitCircle() * (meteorSpread * _k);
+            Vector3 candidate = _targetT.position + new Vector3(offset.x, 0f, offset.y);
+
+            // 아레나가 있으면 벽 안쪽으로 끌어당긴다(밖에 떨어져 봐야 보이지도 않는다)
+            var arena = Arena;
+            if (arena != null)
+            {
+                Vector3 c = arena.transform.position;
+                Vector3 flat = candidate - c;
+                flat.y = 0f;
+                float max = arena.Radius * 0.92f;
+                if (flat.magnitude > max) candidate = c + flat.normalized * max;
+            }
+
+            // 바닥 높이 확정. TryFindFloor를 쓴다 — 여기서 따로 "가장 높은 히트"를 고르면
+            // 닫힌 실내에서 천장을 바닥으로 잡아 낙하물이 천장에 떨어진다.
+            if (TryFindFloor(candidate, out float groundY))
+            {
+                point = new Vector3(candidate.x, groundY, candidate.z);
+                return true;
+            }
         }
 
-        // 바닥 높이 확정. TryFindFloor를 쓴다 — 여기서 따로 "가장 높은 히트"를 고르면
-        // 닫힌 실내에서 천장을 바닥으로 잡아 낙하물이 천장에 떨어진다.
-        if (!TryFindFloor(candidate, out float groundY)) return false;
-
-        point = new Vector3(candidate.x, groundY, candidate.z);
-        return true;
+        // 그래도 못 찾으면 플레이어 발밑 — 서 있는 자리에는 반드시 바닥이 있다
+        if (TryFindFloor(_targetT.position, out float fallbackY))
+        {
+            point = new Vector3(_targetT.position.x, fallbackY, _targetT.position.z);
+            return true;
+        }
+        return false;
     }
 
     /// <summary>플레이어 등 뒤 → 정면 → 좌우 순으로 설 수 있는 자리를 찾는다.</summary>
@@ -1749,7 +1840,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         // 벽에 다시 끼지 않도록 캡슐 지름만큼 안쪽으로 들어온다
         float margin = _cc.radius * Mathf.Abs(transform.lossyScale.x) * 2f;
         Vector3 spot = center + flat.normalized * Mathf.Max(0.01f, arena.Radius - margin);
-        if (TryFindFloor(spot, out float floorY)) spot.y = floorY;
+        if (TryFindFloorUnderBoss(spot, out float floorY)) spot.y = floorY;
 
         _flash?.Spawn(BodyCenter());
         WarpTo(spot);
@@ -2024,43 +2115,52 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     }
 
     /// <summary>분신들이 늘어설 원(아레나 밖). ArenaWall이 없으면 텔레포트 거리를 기준으로 잡는다.</summary>
+    /// <summary>
+    /// 분신들이 늘어설 원. 예전에는 아레나 '밖' 지면에 세웠는데, 맵이 벽으로 둘러싸인
+    /// 실내로 바뀌면서 그 자리가 벽 너머가 됐다 — 플레이어가 진짜를 찾아 쏠 수가 없다.
+    /// 이제는 아레나 <b>안쪽</b> 천장 근처에 띄운다. 어차피 충전 중에는 중력을 주지 않으므로
+    /// 발판은 필요 없고, 올려다보면 전원이 한눈에 들어온다.
+    /// </summary>
     private void ResolveJudgmentRing(out Vector3 center, out float radius)
     {
-        var arena = FindFirstObjectByType<ArenaWall>();
+        var arena = Arena;
         if (arena != null)
         {
             center = arena.transform.position;
-            // 분신은 아레나 '밖'에 서야 하므로 가장 먼 방향(바깥 반지름)을 기준으로 잡는다.
-            // 원이 아닌 맵에서 안쪽 반지름을 쓰면 긴 쪽 분신이 아레나 안에 들어와 버린다.
-            radius = arena.OuterRadius * judgmentRingScale;
-
-            // 다만 벽으로 막힌 실내 맵에서는 '아레나 밖'에 설 자리가 아예 없다 —
-            // 그대로 두면 분신 전원이 벽 속에 파묻혀 패턴이 통째로 안 보인다.
-            // 링 위에 실제로 바닥이 있는지 확인하고, 없으면 아레나 안쪽 가장자리로 당긴다.
-            if (!RingHasFloor(center, radius))
-                radius = arena.Radius * 0.9f;
+            // 원이 아닌 맵에서도 전원이 벽 안에 들어오도록 '가장 짧은 방향'을 기준으로 잡는다
+            radius = arena.Radius * judgmentRingScale;
         }
         else
         {
             center = _targetT != null ? _targetT.position : transform.position;
-            center.y = transform.position.y;
             radius = Mathf.Max(_teleportDist, teleportDistance * _k) * 1.5f;
         }
+
+        center.y = ResolveJudgmentY(center);
     }
 
-    /// <summary>그 반지름의 원 위에 분신이 설 만한 바닥이 실제로 있는가(과반이면 인정).</summary>
-    private bool RingHasFloor(Vector3 center, float radius)
+    /// <summary>
+    /// 분신이 뜰 높이. 아레나 바닥에서 judgmentHeight 만큼 올리되 천장을 뚫지 않게 낮춘다.
+    ///
+    /// ※ 바닥은 <b>보스가 서 있는 높이</b>를 기준으로 잰다. 아레나 오브젝트의 원점이
+    ///   바닥보다 높이 있는 맵이 있는데, 그 높이에서 TryFindFloor 를 부르면 '기준보다
+    ///   위'를 걸러내는 규칙에 실내 천장이 걸리지 않아 천장을 바닥으로 잡아 버린다.
+    /// </summary>
+    private float ResolveJudgmentY(Vector3 center)
     {
-        const int samples = 8;
-        int ok = 0;
-        for (int i = 0; i < samples; i++)
-        {
-            float a = 360f / samples * i * Mathf.Deg2Rad;
-            Vector3 p = center + new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a)) * radius;
-            p.y = center.y;
-            if (TryFindFloor(p, out _)) ok++;
-        }
-        return ok * 2 > samples;
+        float floorY = TryFindFloorUnderBoss(center, out float found) ? found : transform.position.y;
+
+        float body = _cc != null ? _cc.height * Mathf.Abs(transform.lossyScale.y) : 1.8f * _k;
+        float want = floorY + judgmentHeight;
+
+        // 천장이 있으면 그 아래로 — 한 몸 높이만큼은 여유를 둔다
+        float reach = judgmentHeight * 3f + body;
+        Vector3 probe = new Vector3(center.x, floorY, center.z);
+        if (Physics.Raycast(probe + Vector3.up * (0.05f * _k), Vector3.up,
+                            out RaycastHit hit, reach, obstacleMask, QueryTriggerInteraction.Ignore))
+            want = Mathf.Min(want, hit.point.y - body);
+
+        return Mathf.Max(floorY, want);
     }
 
     private void DespawnClones()
@@ -2082,7 +2182,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
                  : transform.position;
 
             // 아레나 원점이 바닥과 다를 수 있으므로 실제 지면을 재서 내려놓는다
-            if (TryFindFloor(spot, out float floorY)) spot.y = floorY;
+            if (TryFindFloorUnderBoss(spot, out float floorY)) spot.y = floorY;
         }
 
         _flash?.Spawn(BodyCenter());
@@ -2260,6 +2360,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private void StartPattern(PatternKind kind)
     {
         RecordPatternEvent(kind);
+        _stuckTimer = 0f;   // 걷기를 멈추는 순간 끼임 누적은 의미가 없다
 
         switch (kind)
         {
@@ -2532,6 +2633,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         if (_cc.isGrounded && _verticalVelocity < 0f) _verticalVelocity = -2f * _k;
         _verticalVelocity += gravity * _k * Time.deltaTime;
         _cc.Move((horizontal + Vector3.up * _verticalVelocity) * Time.deltaTime);
+
+        // 보스의 이동은 걷기·돌진·할퀴기 전진·복귀까지 전부 이 함수를 지나간다.
+        // 여기서 겹침을 풀어 두면 어느 경로로 파묻혀도 스스로 빠져나온다.
+        CharacterUnstick.Resolve(_cc);
     }
 
     /// <summary>공격 중 제자리 유지: 로코모션을 대기로 되돌리고 중력만 적용.</summary>

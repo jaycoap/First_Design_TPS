@@ -1397,7 +1397,8 @@ MonoBehaviour:
   judgmentHealthRatio: 0.3
   judgmentCloneCount: 9
   judgmentChargeTime: 6
-  judgmentRingScale: 1.3
+  judgmentRingScale: 0.75
+  judgmentHeight: 0.6
   judgmentDamage: 34
   judgmentVolleyStagger: 0.12
   judgmentBreakHits: 30

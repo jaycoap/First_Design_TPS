@@ -88,6 +88,7 @@ public class PlayerController : MonoBehaviour
     private float _slowFactor = 1f;    // 외부에서 건 이동 둔화 배율
     private float _slowUntil;          // 둔화 만료 시각
 
+
     private const float AimRange = 500f;
 
     // Animator 파라미터 해시(있을 때만 사용)
@@ -256,6 +257,7 @@ public class PlayerController : MonoBehaviour
 
         Vector3 velocity = horizontal + Vector3.up * _verticalVelocity;
         _cc.Move(velocity * Time.deltaTime);
+        CharacterUnstick.Resolve(_cc);
 
         // --- Animator 갱신(컨트롤러가 실제로 있을 때만) ---
         if (animator != null && animator.runtimeAnimatorController != null)

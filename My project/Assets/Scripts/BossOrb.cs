@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Rendering;
+using BossFX;   // BossPatternFX 패키지(셰이더 + 라이브러리)
 
 /// <summary>
 /// 보스가 3단계에서 레이저 대신 쏘는 <b>레이저 구체</b>(투사체).
@@ -8,6 +9,9 @@ using UnityEngine.Rendering;
 /// - 레이저와 달리 <b>날아가는 것이 눈에 보인다</b> — 발사 순간이 아니라 도달할 때까지 피할 수 있다.
 /// - 대신 착탄하면 반경 안이 전부 피해라 옆으로 살짝 비키는 것만으로는 부족하다.
 /// - 벽에 닿아도 터진다(스피어캐스트로 진행 경로를 확인).
+///
+/// 구체와 폭발은 BossPatternFX 의 Radial 셰이더로 그린다 — 판 한 장에 SDF 로 그리므로
+/// 가까이서 봐도 테두리가 뭉개지지 않고, 폭발은 섬광 + 퍼지는 링 두 겹으로 읽힌다.
 /// 크기/속도는 사람 1.8m 기준 × k 배율.
 /// </summary>
 public class BossOrb : MonoBehaviour
@@ -16,8 +20,7 @@ public class BossOrb : MonoBehaviour
     private const float FadeTime = 0.9f;
 
     private Transform _head;      // 꼬리/광원(스케일 1)
-    private GameObject _glow;     // 빛나는 판(빌보드)
-    private Material _glowMat;
+    private BossFx.Surface _glow; // 빛나는 판(Radial/Orb, 빌보드)
     private TrailRenderer _trail;
     private Light _light;
 
@@ -29,8 +32,6 @@ public class BossOrb : MonoBehaviour
     private IDamageable _targetDamage;
     private Transform _owner;     // 보스 자신 — 제 몸에 터지지 않도록 제외
     private bool _exploded;
-
-    private static GunFx.ImpactFx _sharedImpact;
 
     /// <summary>구체 하나를 발사한다.</summary>
     public static BossOrb Launch(Vector3 from, Vector3 dir, float k, Color color,
@@ -70,21 +71,19 @@ public class BossOrb : MonoBehaviour
         head.transform.SetParent(transform, false);
         _head = head.transform;
 
-        var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
-        quad.name = "Glow";
-        Destroy(quad.GetComponent<Collider>());
-        quad.transform.SetParent(head.transform, false);
-        quad.transform.localScale = Vector3.one * (1.1f * _radius);
-        _glow = quad;
-
-        var rend = quad.GetComponent<Renderer>();
-        _glowMat = new Material(GunFx.MakeTracerMaterial()) { hideFlags = HideFlags.DontSave };
-        var bodyColor = new Color(hot.r, hot.g, hot.b, BodyAlpha);
-        if (_glowMat.HasProperty("_BaseColor")) _glowMat.SetColor("_BaseColor", bodyColor);
-        if (_glowMat.HasProperty("_Color")) _glowMat.SetColor("_Color", bodyColor);
-        rend.sharedMaterial = _glowMat;
-        rend.shadowCastingMode = ShadowCastingMode.Off;
-        rend.receiveShadows = false;
+        // 구체 본체: 중심이 밝고 바깥으로 발광이 번지는 Radial/Orb 판 한 장
+        _glow = new BossFx.Surface("Glow", head.transform, BossFXLibrary.QuadXZ, BossFx.RadialMat);
+        _glow.Set(BossFXLibrary.PMode, (float)(int)BossRadialMode.Orb)
+             .Set(BossFXLibrary.PColorCore, Color.Lerp(hot, Color.white, 0.2f))
+             .Set(BossFXLibrary.PColorEdge, color)
+             .Set(BossFXLibrary.PThickness, 0.4f)     // 밝은 심이 차지하는 비율
+             .Set(BossFXLibrary.PFalloff, 2.2f)
+             // 꼬리와 겹치는 자리가 가산으로 더해진다 — 세기를 낮게 잡아 흰색으로 뭉개지지 않게
+             .Set(BossFXLibrary.PIntensity, 2.4f)
+             .Set(BossFXLibrary.POpacity, BodyAlpha)
+             .Apply();
+        _glow.Shown = true;
+        _glow.T.localScale = new Vector3(1.1f * _radius, 1f, 1.1f * _radius);
 
         _trail = head.AddComponent<TrailRenderer>();
         _trail.sharedMaterial = GunFx.MakeTracerMaterial();
@@ -149,21 +148,19 @@ public class BossOrb : MonoBehaviour
     private bool IsOwn(Collider col)
         => _owner != null && col != null && col.transform.IsChildOf(_owner);
 
-    /// <summary>어느 각도에서도 구체로 보이도록 카메라를 향해 세운다.</summary>
+    /// <summary>어느 각도에서도 구체로 보이도록 판을 카메라 쪽으로 세운다.</summary>
     private void Billboard()
     {
-        var cam = Camera.main;
-        if (cam == null) return;
-        Vector3 toCam = _head.position - cam.transform.position;
-        if (toCam.sqrMagnitude > 1e-8f)
-            _head.rotation = Quaternion.LookRotation(toCam.normalized, cam.transform.up);
+        if (_glow != null) BossFx.FaceCamera(_glow.T, Camera.main);
     }
 
     /// <summary>날아가는 동안 크기가 미세하게 일렁여 '살아있는 에너지'로 보이게 한다.</summary>
     private void Pulse()
     {
+        if (_glow == null) return;
         float wob = 0.85f + 0.15f * Mathf.Sin(Time.time * 18f);
-        if (_glow != null) _glow.transform.localScale = Vector3.one * (1.1f * _radius * wob);
+        float d = 1.1f * _radius * wob;
+        _glow.T.localScale = new Vector3(d, 1f, d);
     }
 
     private void Explode()
@@ -173,12 +170,36 @@ public class BossOrb : MonoBehaviour
         _timer = 0f;
 
         Vector3 at = _head.position;
-        if (_glow != null) _glow.SetActive(false);
+        if (_glow != null) _glow.Shown = false;
         if (_trail != null) _trail.emitting = false;
 
-        if (_sharedImpact == null || _sharedImpact.Root == null)
-            _sharedImpact = GunFx.BuildImpact(_k * 4f, _color);
-        _sharedImpact.Spawn(at, Vector3.up);
+        // 폭발: 방사형 섬광이 먼저 터지고, 피해 반경만큼 링이 퍼져 "어디까지 위험했는지"를 남긴다
+        BossImpactFX.Spawn(new BossImpactSettings
+        {
+            mode = BossRadialMode.Burst,
+            radius = _radius * 1.8f,
+            duration = 0.26f,
+            falloff = 2.0f,
+            coreColor = Color.Lerp(_color, Color.white, 0.45f),
+            edgeColor = _color,
+            intensity = 4.5f,
+            flatOnGround = false,
+        }, at);
+
+        BossImpactFX.Spawn(new BossImpactSettings
+        {
+            mode = BossRadialMode.Ring,
+            radius = _radius * 2.2f,
+            duration = 0.4f,
+            thickness = 0.12f,
+            falloff = 2.4f,
+            coreColor = Color.Lerp(_color, Color.white, 0.3f),
+            edgeColor = _color,
+            intensity = 3.4f,
+            flatOnGround = true,
+            groundOffset = 0f,
+        }, at);
+
         GameSfx.PlayAt(Sfx.MeteorImpact, at, pitch: Random.Range(1.05f, 1.2f)); // 운석보다 가볍게
 
         // 폭발 순간에만 짧게 켜지는 광원(아래 Update가 빠르게 꺼뜨린다)
@@ -213,8 +234,4 @@ public class BossOrb : MonoBehaviour
         return cc != null ? _target.TransformPoint(cc.center) : _target.position + Vector3.up * (0.9f * _k);
     }
 
-    private void OnDestroy()
-    {
-        if (_glowMat != null) Destroy(_glowMat);
-    }
 }

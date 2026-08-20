@@ -1,15 +1,16 @@
 using UnityEngine;
 using UnityEngine.Rendering;
+using BossFX;   // BossPatternFX 패키지(셰이더 + 라이브러리)
 
 /// <summary>
 /// 보스 텔레포트 충격파와 함께 하늘에서 떨어지는 운석(투사체).
 /// 에셋 없이 코드로 만들며, 스스로 예고 → 낙하 → 착탄까지 처리하고 사라진다.
 ///
-/// - 바닥에 착탄 지점을 알리는 링이 먼저 그려지고, 착탄이 가까울수록 빠르게 깜빡인다.
-/// - 그 안쪽에서 두 번째 링이 중심으로 조여들어 "언제 떨어지는지"를 눈으로 셀 수 있다.
+/// - 바닥에 착탄 범위만 한 경고 장판(BossPatternFX/Telegraph)이 깔리고, 착탄까지 남은
+///   시간만큼 중심에서 바깥으로 차오른다 — "언제 떨어지는지"를 눈으로 셀 수 있다.
 /// - 하늘에서 착탄점까지 빛기둥이 서서, 어느 자리가 위험한지 멀리서도 보인다.
 /// - 낙하체는 꼬리를 끌며 떨어져, 어디로 오는지 눈으로 쫓을 수 있다.
-/// - 착탄 순간 반경 안의 대상에게 피해(구르기 무적으로 흘릴 수 있다) + 충격파 링이 퍼진다.
+/// - 착탄 순간 반경 안의 대상에게 피해(구르기 무적으로 흘릴 수 있다) + 섬광·충격파 링.
 /// 크기/속도는 사람 1.8m 기준 × k 배율.
 /// </summary>
 public class BossMeteor : MonoBehaviour
@@ -28,34 +29,35 @@ public class BossMeteor : MonoBehaviour
 
     private State _state = State.Falling;
     private Transform _body;         // 낙하체 머리(꼬리/광원 부착, 스케일 1)
-    private GameObject _glow;        // 빛나는 판(빌보드)
-    private Material _bodyMat;
-    private LineRenderer _fill;      // 착탄 범위를 통째로 칠하는 원판(선보다 훨씬 잘 읽힌다)
-    private LineRenderer _ring;      // 착탄 반경(고정)
-    private LineRenderer _closing;   // 중심으로 조여드는 카운트다운 링
-    private LineRenderer _column;    // 하늘 → 착탄점 빛기둥
-    private LineRenderer _shock;     // 착탄 충격파(퍼져나가며 사라짐)
+    private BossFx.Surface _glow;    // 낙하체 본체(Radial/Orb, 빌보드)
+    private BossFx.Surface _warn;    // 착탄 범위 경고 장판(Telegraph/Circle)
+    private BossFx.Surface _column;  // 하늘 → 착탄점 빛기둥(Beam)
     private TrailRenderer _trail;
     private Light _light;
 
     private Vector3 _impact, _start;
     private float _fallTime, _timer, _radius, _damage, _k;
+    private float _delay;            // 발사 지연 — 이만큼 기다렸다가 예고를 시작한다
     private Color _color;
     private Style _style = Style.Orb;
     private Transform _target;
     private IDamageable _targetDamage;
 
-    private static GunFx.ImpactFx _sharedImpact;
-
-    /// <summary>낙하물 하나를 예고와 함께 떨어뜨린다.</summary>
+    /// <summary>
+    /// 낙하물 하나를 예고와 함께 떨어뜨린다.
+    /// startDelay 를 주면 그만큼 기다렸다가 예고를 시작한다 — 여러 발을 한 프레임에
+    /// 다 만들어 놓고 시차만 다르게 주기 위한 것이다. 뿌리는 쪽이 코루틴으로 한 발씩
+    /// 만들면, 그 코루틴이 중간에 끊길 때 나머지가 통째로 사라진다.
+    /// </summary>
     public static BossMeteor Launch(Vector3 impactPoint, float k, Color color,
                                     float damage, float radius, float fallTime, Transform target,
-                                    Style style = Style.Orb)
+                                    Style style = Style.Orb, float startDelay = 0f)
     {
         var go = new GameObject(style == Style.Beam ? "BossSkyBeam" : "BossMeteor");
         go.transform.position = impactPoint;
         var m = go.AddComponent<BossMeteor>();
         m._style = style;
+        m._delay = Mathf.Max(0f, startDelay);
         m.Init(impactPoint, k, color, damage, radius, fallTime, target);
         return m;
     }
@@ -103,28 +105,29 @@ public class BossMeteor : MonoBehaviour
         const float BodyAlpha = 0.6f;
         const float TrailAlpha = 0.45f;
 
-        // 착탄 범위를 통째로 칠하는 원판. 반지름 r/2 원을 굵기 r로 그리면 원판이 채워진다 —
-        // 얇은 선은 이 스케일(반경 30cm 남짓)에서 화면상 몇 픽셀이라 눈에 안 들어온다.
-        // 가장 먼저 만들어야 링·기둥이 그 위에 겹쳐 그려진다.
-        _fill = MakeRing("Fill");
-
-        // 착탄 예고 링(바닥에 살짝 띄워 z-파이팅 방지) — 반지름은 스케일로 준다
-        _ring = MakeRing("Warning");
-        // 카운트다운 링: 착탄 순간 정확히 중심에서 만나도록 조여든다
-        _closing = MakeRing("Countdown");
+        // 착탄 경고 장판: 범위를 통째로 칠하고, 남은 시간만큼 중심에서 바깥으로 차오른다.
+        // 얇은 선은 이 스케일(반경 30cm 남짓)에서 화면상 몇 픽셀이라 눈에 안 들어오므로
+        // 처음부터 면으로 깐다.
+        _warn = new BossFx.Surface("Warning", transform, BossFXLibrary.QuadXZ, BossFx.TelegraphMat);
+        _warn.Set(BossFXLibrary.PShape, (float)(int)BossShape.Circle)
+             .Set(BossFXLibrary.PFillMode, (float)(int)BossFillMode.Radial)
+             .Set(BossFXLibrary.PColorBase, color)
+             .Set(BossFXLibrary.PColorHot, Color.Lerp(color, Color.white, 0.4f))
+             .Set(BossFXLibrary.PColorEdge, Color.Lerp(color, Color.white, 0.6f))
+             .Apply();
+        _warn.Shown = true;
+        // 쿼드는 1x1 이고 셰이더 좌표가 [-1,1] 이므로 지름(=반지름 x2)이 곧 스케일이다
+        _warn.T.position = impactPoint + Vector3.up * (0.02f * k);
+        _warn.T.rotation = Quaternion.identity;
+        _warn.T.localScale = new Vector3(radius * 2f, 1f, radius * 2f);
 
         // 빛기둥: 하늘에서 착탄점까지 — 어느 자리가 위험한지 멀리서도 보인다
-        var colGO = new GameObject("SkyColumn");
-        colGO.transform.SetParent(transform, false);
-        _column = colGO.AddComponent<LineRenderer>();
-        _column.sharedMaterial = GunFx.MakeTracerMaterial();
-        _column.useWorldSpace = true;
-        _column.positionCount = 2;
-        _column.SetPosition(0, impactPoint + Vector3.up * (0.02f * k));
-        _column.SetPosition(1, _start);
-        _column.numCapVertices = 2;
-        _column.shadowCastingMode = ShadowCastingMode.Off;
-        _column.receiveShadows = false;
+        _column = new BossFx.Surface("SkyColumn", transform, BossFXLibrary.QuadForward, BossFx.BeamMat);
+        _column.Set(BossFXLibrary.PColorCore, Color.Lerp(hot, Color.white, 0.3f))
+               .Set(BossFXLibrary.PColorGlow, color)
+               .Set(BossFXLibrary.PFire, 1f)
+               .Apply();
+        _column.Shown = true;
 
         // 레이저 강우는 낙하체가 없다 — 예고 동안엔 빛기둥만 서 있다가 착탄 순간
         // 그 기둥이 그대로 굵게 내리꽂힌다. 아래 낙하체 생성은 구체일 때만 한다.
@@ -138,20 +141,18 @@ public class BossMeteor : MonoBehaviour
         head.transform.position = _start;
         _body = head.transform;
 
-        var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
-        quad.name = "Glow";
-        Destroy(quad.GetComponent<Collider>());
-        quad.transform.SetParent(head.transform, false);
-        quad.transform.localScale = Vector3.one * (1.6f * _radius);
-        _glow = quad;
-        var rend = quad.GetComponent<Renderer>();
-        _bodyMat = new Material(GunFx.MakeTracerMaterial()) { hideFlags = HideFlags.DontSave };
-        var bodyColor = new Color(hot.r, hot.g, hot.b, BodyAlpha);
-        if (_bodyMat.HasProperty("_BaseColor")) _bodyMat.SetColor("_BaseColor", bodyColor);
-        if (_bodyMat.HasProperty("_Color")) _bodyMat.SetColor("_Color", bodyColor);
-        rend.sharedMaterial = _bodyMat;
-        rend.shadowCastingMode = ShadowCastingMode.Off;
-        rend.receiveShadows = false;
+        _glow = new BossFx.Surface("Glow", head.transform, BossFXLibrary.QuadXZ, BossFx.RadialMat);
+        _glow.Set(BossFXLibrary.PMode, (float)(int)BossRadialMode.Orb)
+             .Set(BossFXLibrary.PColorCore, Color.Lerp(hot, Color.white, 0.2f))
+             .Set(BossFXLibrary.PColorEdge, color)
+             .Set(BossFXLibrary.PThickness, 0.42f)
+             .Set(BossFXLibrary.PFalloff, 2.2f)
+             // 꼬리와 겹치는 자리가 가산으로 더해진다 — 세기를 낮게 잡아 흰색으로 뭉개지지 않게
+             .Set(BossFXLibrary.PIntensity, 2.6f)
+             .Set(BossFXLibrary.POpacity, BodyAlpha)
+             .Apply();
+        _glow.Shown = true;
+        _glow.T.localScale = new Vector3(1.6f * _radius, 1f, 1.6f * _radius);
 
         _trail = head.AddComponent<TrailRenderer>();
         _trail.sharedMaterial = GunFx.MakeTracerMaterial();
@@ -173,92 +174,61 @@ public class BossMeteor : MonoBehaviour
         // 낙하물마다 광원을 달면 7발이 동시에 뜨는 순간 바닥 같은 큰 오브젝트에서
         // '어느 4개를 쓸지'가 매 프레임 뒤바뀌어 화면 전체가 번쩍인다.
         // 빛나는 판 + 꼬리만으로도 충분히 빛나 보이고, 폭발 순간에만 짧게 광원을 켠다.
+
+        if (_delay > 0f) SetVisible(false);
     }
 
-    /// <summary>바닥에 눕는 단위원 링. 반지름/굵기/색은 SetRing으로 매 프레임 조절한다.</summary>
-    private LineRenderer MakeRing(string name)
+    /// <summary>발사 지연 동안에는 아무것도 보이지 않아야 한다.</summary>
+    private void SetVisible(bool on)
     {
-        var go = new GameObject(name);
-        go.transform.SetParent(transform, false);
-        go.transform.position = _impact + Vector3.up * (0.02f * _k);
-
-        var lr = go.AddComponent<LineRenderer>();
-        lr.sharedMaterial = GunFx.MakeTracerMaterial();
-        lr.useWorldSpace = false;
-        lr.loop = true;
-        lr.numCapVertices = 2;
-        lr.shadowCastingMode = ShadowCastingMode.Off;
-        lr.receiveShadows = false;
-
-        const int steps = 56;
-        lr.positionCount = steps;
-        for (int i = 0; i < steps; i++)
-        {
-            float a = Mathf.PI * 2f * i / steps;
-            lr.SetPosition(i, new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a)));
-        }
-        return lr;
-    }
-
-    /// <summary>단위원 링을 원하는 반지름/굵기/색으로 세팅.</summary>
-    private static void SetRing(LineRenderer lr, float radius, float width, Color color)
-    {
-        if (lr == null) return;
-        radius = Mathf.Max(1e-4f, radius);
-        lr.transform.localScale = Vector3.one * radius;
-        // LineRenderer 굵기는 트랜스폼 스케일에도 곱해지므로 반지름만큼 되돌린다
-        lr.startWidth = lr.endWidth = width / radius;
-        lr.startColor = lr.endColor = color;
+        if (_warn != null) _warn.Shown = on;
+        if (_column != null) _column.Shown = on;
+        if (_glow != null) _glow.Shown = on;
+        if (_trail != null) _trail.emitting = on;
     }
 
     private void Update()
     {
+        if (_delay > 0f)
+        {
+            _delay -= Time.deltaTime;
+            if (_delay > 0f) return;
+            SetVisible(true);   // 이제부터 예고 시작
+        }
+
         if (_state == State.Falling)
         {
             _timer += Time.deltaTime;
             float t = Mathf.Clamp01(_timer / _fallTime);
 
+            var cam = Camera.main;
+
             // 가속 낙하(자유낙하 느낌) + 카메라를 향한 빌보드. 레이저 강우는 낙하체가 없다.
             if (_body != null)
             {
                 _body.position = Vector3.Lerp(_start, _impact, t * t);
-                var cam = Camera.main;
-                if (cam != null)
-                {
-                    Vector3 toCam = _body.position - cam.transform.position;
-                    if (toCam.sqrMagnitude > 1e-8f)
-                        _body.rotation = Quaternion.LookRotation(toCam.normalized, cam.transform.up);
-                }
+                BossFx.FaceCamera(_glow.T, cam);
             }
 
-            // 착탄이 가까울수록 링이 빠르게, 밝게 깜빡인다.
-            // 맥동 바닥값을 높여(0.65) 가장 옅은 순간에도 링이 지워지지 않게 한다.
+            // 착탄이 가까울수록 빠르게, 밝게 맥동한다.
+            // 바닥값을 높여(0.65) 가장 옅은 순간에도 장판이 지워지지 않게 한다.
             float freq = Mathf.Lerp(3f, 20f, t);
             float pulse = 0.65f + 0.35f * Mathf.Abs(Mathf.Sin(_timer * freq));
 
-            // 원판: 위험 구역 전체를 옅게 칠한다. 알파를 낮게 두는 이유는 가산 블렌딩이라
-            // 원판 위에 링·기둥이 더해지기 때문 — 높이면 겹친 자리가 하얗게 뭉갠다.
-            Color fill = _color;
-            fill.a = Mathf.Lerp(0.16f, 0.4f, t) * pulse;
-            SetRing(_fill, _radius * 0.5f, _radius, fill);
+            // 경고 장판: 남은 시간만큼 중심에서 바깥으로 차오른다.
+            // 가산 블렌딩이라 세기를 높이면 기둥과 겹친 자리가 하얗게 뭉갠다 — 낮게 유지한다.
+            _warn.Set(BossFXLibrary.PFill, t)
+                 .Set(BossFXLibrary.PIntensity, Mathf.Lerp(0.7f, 1.5f, t) * pulse)
+                 .Set(BossFXLibrary.POpacity, Mathf.Lerp(0.55f, 1f, t))
+                 .Apply();
 
-            // 선 알파는 원판 위에 더해지는 몫이라 낮춘다 — 1.0으로 두면 원판과 겹친
-            // 링 자리가 다시 하얗게 뭉갠다(가산 누적). 굵기로 눈에 띄게 하고 밝기는 아낀다.
-            Color warn = Color.Lerp(_color, Color.white, 0.12f * t);
-            warn.a = pulse * 0.75f;
-            SetRing(_ring, _radius, 0.45f * _k * (1f + t * 1.5f), warn);
-
-            // 카운트다운 링: 반지름이 착탄 순간 0이 되도록 조여든다(남은 시간이 눈에 보인다)
-            Color close = Color.Lerp(_color, Color.white, 0.25f);
-            close.a = (0.7f + 0.3f * t) * 0.8f;
-            SetRing(_closing, _radius * (1f - t), 0.34f * _k * (1f + t), close);
-
-            // 빛기둥: 착탄점 위로 곧게 서서 떨어질수록 진해진다(멀리서도 위험 지점이 보인다)
-            Color col = _color;
-            col.a = Mathf.Lerp(0.35f, 0.9f, t) * pulse;
-            _column.startColor = col;
-            _column.endColor = new Color(col.r, col.g, col.b, col.a * 0.3f);
-            _column.startWidth = _column.endWidth = 0.8f * _radius * (0.7f + t);
+            // 빛기둥: 착탄점 위로 곧게 서서 떨어질수록 굵고 진해진다(멀리서도 위험 지점이 보인다)
+            BossFx.PlaceBeamQuad(_column.T, _impact + Vector3.up * (0.02f * _k), _start,
+                                 1.6f * _radius * (0.7f + t), cam);
+            _column.Set(BossFXLibrary.PCharge, Mathf.Lerp(0.18f, 0.5f, t))
+                   .Set(BossFXLibrary.PIntensity, Mathf.Lerp(1.2f, 2.8f, t) * pulse)
+                   .Set(BossFXLibrary.POpacity, Mathf.Lerp(0.35f, 0.9f, t))
+                   .Apply();
 
             if (t >= 1f) Impact();
             return;
@@ -270,25 +240,19 @@ public class BossMeteor : MonoBehaviour
         float s = Mathf.Clamp01(_timer / ShockTime);
         if (s < 1f)
         {
-            Color sc = Color.Lerp(_color, Color.white, 0.3f * (1f - s));
-            sc.a = 1f - s;
-            SetRing(_shock, _radius * Mathf.Lerp(0.3f, 2.6f, s), 0.3f * _k * (1f - s * 0.6f), sc);
-
-            // 레이저 강우: 예고로 서 있던 빛기둥이 그대로 굵게 내리꽂혔다가 사그라든다
+            // 레이저 강우: 예고로 서 있던 빛기둥이 그대로 굵게 내리꽂혔다가 사그라든다.
+            // 위→아래로 다시 걸어야 셰이더의 끝단 가늘어짐이 착탄점을 찌르는 쪽으로 향한다.
             if (_style == Style.Beam && _column != null)
             {
-                Color bc = Color.Lerp(_color, Color.white, 0.35f * (1f - s));
-                bc.a = 1f - s;
-                _column.startColor = bc;
-                _column.endColor = new Color(bc.r, bc.g, bc.b, bc.a * 0.4f);
-                _column.startWidth = _column.endWidth = _radius * Mathf.Lerp(1.6f, 0.4f, s);
+                BossFx.PlaceBeamQuad(_column.T, _start, _impact,
+                                     _radius * Mathf.Lerp(3.2f, 0.8f, s), Camera.main);
+                _column.Set(BossFXLibrary.PCharge, 1f)
+                       .Set(BossFXLibrary.PIntensity, Mathf.Lerp(6f, 1.5f, s))
+                       .Set(BossFXLibrary.POpacity, 1f - s)
+                       .Apply();
             }
         }
-        else
-        {
-            if (_shock != null) _shock.enabled = false;
-            if (_column != null) _column.enabled = false;
-        }
+        else if (_column != null) _column.Shown = false;
 
         // 폭발 광원은 0.35초 안에 꺼진다(오래 남으면 다음 낙하물의 광원과 겹쳐 깜빡임을 만든다)
         if (_light != null) _light.intensity = Mathf.Max(0f, _light.intensity - 20f * Time.deltaTime);
@@ -300,24 +264,43 @@ public class BossMeteor : MonoBehaviour
         _state = State.Impacted;
         _timer = 0f;
 
-        if (_fill != null) _fill.enabled = false;
-        if (_ring != null) _ring.enabled = false;
-        if (_closing != null) _closing.enabled = false;
+        if (_warn != null) _warn.Shown = false;
         // 레이저 강우는 빛기둥이 곧 '떨어지는 레이저' 본체다 → 끄지 않고 Update가 내리꽂는다
-        if (_column != null && _style != Style.Beam) _column.enabled = false;
+        if (_column != null && _style != Style.Beam) _column.Shown = false;
         // 머리는 남겨 두고 판만 끈다 → 꼬리가 제자리에서 자연스럽게 사그라든다
-        if (_glow != null) _glow.SetActive(false);
+        if (_glow != null) _glow.Shown = false;
         if (_trail != null) _trail.emitting = false;
         if (_light != null) _light.enabled = false; // 낙하체 광원(폭발 광원으로 교체된다)
 
-        // 착탄 이펙트(총기 탄착 FX 재사용 — 색만 보스 것)
-        if (_sharedImpact == null || _sharedImpact.Root == null)
-            _sharedImpact = GunFx.BuildImpact(_k * 5f, _color);
-        _sharedImpact.Spawn(_impact, Vector3.up);
-        GameSfx.PlayAt(Sfx.MeteorImpact, _impact, pitch: Random.Range(0.9f, 1.1f));
+        // 착탄 섬광
+        BossImpactFX.Spawn(new BossImpactSettings
+        {
+            mode = BossRadialMode.Burst,
+            radius = _radius * 2.2f,
+            duration = 0.28f,
+            falloff = 2.0f,
+            coreColor = Color.Lerp(_color, Color.white, 0.5f),
+            edgeColor = _color,
+            intensity = 5f,
+            flatOnGround = false,
+        }, _impact + Vector3.up * (0.2f * _k));
 
         // 충격파 링: 착탄 반경 밖으로 퍼져나가며 사라진다(어디까지 위험했는지 남는 잔상)
-        _shock = MakeRing("Shockwave");
+        BossImpactFX.Spawn(new BossImpactSettings
+        {
+            mode = BossRadialMode.Ring,
+            radius = _radius * 2.6f,
+            duration = ShockTime,
+            thickness = 0.12f,
+            falloff = 2.2f,
+            coreColor = Color.Lerp(_color, Color.white, 0.3f),
+            edgeColor = _color,
+            intensity = 3.6f,
+            flatOnGround = true,
+            groundOffset = 0.02f * _k,
+        }, _impact);
+
+        GameSfx.PlayAt(Sfx.MeteorImpact, _impact, pitch: Random.Range(0.9f, 1.1f));
 
         // 폭발 광원
         var lightGO = new GameObject("Blast");
@@ -356,8 +339,4 @@ public class BossMeteor : MonoBehaviour
         return cc != null ? _target.TransformPoint(cc.center) : _target.position + Vector3.up * (0.9f * _k);
     }
 
-    private void OnDestroy()
-    {
-        if (_bodyMat != null) Destroy(_bodyMat);
-    }
 }

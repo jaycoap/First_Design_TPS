@@ -116,12 +116,15 @@ namespace BossFX
         void LateUpdate()
         {
             if (!_billboard || _quad == null || Camera.main == null) return;
-            // 빔 축(부모 forward)을 유지한 채, 판이 카메라를 향하도록 축 중심 회전
+            // 빔 축(부모 forward)을 유지한 채, 판이 카메라를 향하도록 축 중심 회전.
+            // ※ up 으로 넘길 것은 "빔 축 × 시선" 그 자체다. 여기에 축을 한 번 더 외적하면
+            //    (= Cross(up, axis)) 판의 폭이 시선 방향으로 서 버려서, 판이 카메라에
+            //    옆면만 보이고 빔이 통째로 사라진다.
             Vector3 axis = transform.forward;
             Vector3 toCam = Camera.main.transform.position - transform.position;
             Vector3 up = Vector3.Cross(axis, toCam);
             if (up.sqrMagnitude < 1e-6f) return;
-            Quaternion world = Quaternion.LookRotation(axis, Vector3.Cross(up, axis).normalized);
+            Quaternion world = Quaternion.LookRotation(axis, up.normalized);
             _quad.rotation = world * Quaternion.Euler(0f, -90f, 0f);
         }
 

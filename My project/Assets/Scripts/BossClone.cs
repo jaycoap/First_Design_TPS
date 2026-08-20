@@ -46,7 +46,17 @@ public class BossClone : MonoBehaviour, IDamageable
         GameObject go = Instantiate(source, holder.transform);
         go.name = "BossClone";
 
-        // 스크립트/물리/기존 이펙트 잔재 제거 — 순수한 모델 + Animator만 남긴다
+        // 보스에 붙어 있던 이펙트를 통째로 들어낸다.
+        // ※ 반드시 스크립트를 지우기 '전'에 해야 한다 — 표식(BossFx.Tag)도 MonoBehaviour라
+        //   아래 루프가 먼저 돌면 표식이 사라져 이펙트를 못 찾는다.
+        // ※ 예전에는 렌더러 종류(LineRenderer/TrailRenderer/ParticleSystemRenderer)로 걸렀는데,
+        //   이펙트가 셰이더 쿼드(MeshRenderer)로 바뀌면서 그 필터를 빠져나갔다. 그 결과
+        //   분신마다 원본의 죽은 광선·장판이 복제돼 붙고, 아래 'r.enabled = true'가 그것들을
+        //   전부 켜 버려서 분신 머리 위·옆에 엉뚱한 레이저가 떠 있었다.
+        foreach (var tag in go.GetComponentsInChildren<BossFx.Tag>(true))
+            if (tag != null) DestroyImmediate(tag.gameObject);
+
+        // 스크립트/물리 잔재 제거 — 순수한 모델 + Animator만 남긴다
         foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
             if (mb != null) DestroyImmediate(mb);
         var cc = go.GetComponent<CharacterController>();
@@ -57,6 +67,7 @@ public class BossClone : MonoBehaviour, IDamageable
         // 레이저를 제 팔이 가로막는다(분신의 사격은 자기 몸을 걸러내지 않는다).
         foreach (var col in go.GetComponentsInChildren<Collider>(true))
             if (col != null) DestroyImmediate(col);
+        // 표식이 없는 옛 잔재(프리팹에 직접 박아 둔 트레일·파티클 등)까지 마저 정리한다
         foreach (var r in go.GetComponentsInChildren<Renderer>(true))
         {
             if (r == null) continue;
