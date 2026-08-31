@@ -30,6 +30,25 @@ public class PlayerShooter : MonoBehaviour
              "값을 바꾸면 애니메이션도 같이 빨라지거나 느려진다.\n" +
              "(애니메이터에 Reload 상태가 없는 구성에서는 이 값이 그대로 대기 시간이 된다)")]
     [SerializeField] private float reloadTime = 1.5f;
+    [Tooltip("빠른 재장전(액티브 리로드) 사용 여부.\n" +
+             "재장전 중 막대 위를 지나가는 화살표가 성공 구간에 들어왔을 때 R을 누르면 즉시 완료된다.")]
+    [SerializeField] private bool activeReloadEnabled = true;
+    [Tooltip("성공 구간의 폭(막대 길이에 대한 비율) — 보스가 만피일 때.")]
+    [SerializeField, Range(0.03f, 0.4f)] private float activeReloadWindow = 0.12f;
+    [Tooltip("성공 구간의 폭 — 보스가 빈사일 때. 보스 체력이 줄수록 이 값으로 좁아진다.")]
+    [SerializeField, Range(0.02f, 0.4f)] private float activeReloadWindowMin = 0.09f;
+    [Tooltip("재장전 한 번 동안 화살표가 막대를 가로지르는 횟수(편도 기준) — 보스가 만피일 때.\n" +
+             "1이면 한 번 훑고 끝난다(막대를 건너는 데 재장전 시간 전부를 쓴다).\n" +
+             "1을 넘으면 끝에 닿았을 때 되돌아온다.")]
+    [SerializeField] private float activeReloadSweeps = 1f;
+    [Tooltip("가로지르는 횟수 — 보스가 빈사일 때. 너무 올리면 눈이 못 따라가므로 조금씩만 올린다.\n" +
+             "1.35 = 화살표가 35% 빨라진다.")]
+    [SerializeField] private float activeReloadSweepsMax = 1.35f;
+    [Tooltip("성공 구간이 놓이는 범위(재장전 진행도 0~1). 매번 이 안에서 무작위로 정해진다.\n" +
+             "앞쪽을 비워 두는 이유: 재장전이 시작되자마자 지나가면 반응할 시간이 없다.\n" +
+             "뒤쪽을 비워 두는 이유: 끝에 붙으면 성공해도 아낀 시간이 없어 의미가 없다.")]
+    [SerializeField] private Vector2 activeReloadRange = new Vector2(0.28f, 0.86f);
+
     [Tooltip("조준(우클릭) 중일 때만 발사할지 여부")]
     [SerializeField] private bool requireAimToFire = true;
     [SerializeField] private LayerMask hitMask = ~0;
@@ -104,6 +123,13 @@ public class PlayerShooter : MonoBehaviour
     private GunFx.ImpactFx _critImpactFx;                // 약점(머리) 전용 탄착 FX
     private float _fxScale;
     private int _ammo;                                   // 현재 탄약
+    // 빠른 재장전(액티브 리로드) 상태. 전부 막대 위 0~1 좌표 기준이다.
+    private float _arStart, _arEnd;   // 이번 재장전의 성공 구간
+    private float _arSweeps = 1f;     // 이번 재장전의 왕복 횟수(시작할 때 정해 고정한다)
+    private bool _arUsed;             // 이번 재장전에 이미 R을 눌렀다(기회는 한 번)
+    private bool _arSuccess;          // 마지막 시도의 결과(연출용)
+    private float _arFeedbackTime = -99f;
+
     private bool _reloading;
     private float _reloadStartTime;
     private bool _reloadStateSeen;                       // 애니메이터 Reload 상태 진입 확인 여부
@@ -127,6 +153,61 @@ public class PlayerShooter : MonoBehaviour
     public int MagazineSize => magazineSize;
     /// <summary>재장전 중 여부. PlayerController가 UpperBody 레이어 가중치에 사용.</summary>
     public bool IsReloading => _reloading;
+
+    // ---- 빠른 재장전(HUD가 막대를 그리는 데 쓰는 값들. 전부 진행도 0~1 기준) ----
+
+    /// <summary>지금 막대를 띄워야 하는가.</summary>
+    public bool ActiveReloadShown => _reloading && activeReloadEnabled;
+
+    /// <summary>재장전 진행도(막대 바탕이 차오르는 정도).</summary>
+    public float ReloadProgress01 => reloadTime <= 0.01f ? 1f
+        : Mathf.Clamp01((Time.time - _reloadStartTime) / reloadTime);
+
+    /// <summary>
+    /// 화살표 위치 0~1. 진행도와 <b>다르다</b> — 왕복하기 때문이다.
+    ///
+    /// 보스가 약해질수록 화살표가 빨라져야 하는데, 재장전 시간은 그대로이므로
+    /// 한 번 훑고 끝나면 남는 시간이 생긴다. 그래서 끝에 닿으면 되돌아온다.
+    /// (오른쪽 끝에서 왼쪽으로 순간이동하는 방식은 그 순간을 눈이 놓친다)
+    /// 진행도는 막대 바탕이 차오르는 것으로 따로 읽는다.
+    /// </summary>
+    public float ActiveReloadMarker01
+    {
+        get
+        {
+            // 왕복 한 번 = 편도 2회이므로 주기가 2다. 삼각파로 접어 0~1로 되돌린다.
+            float f = Mathf.Repeat(ReloadProgress01 * Mathf.Max(0.25f, _arSweeps), 2f);
+            return f <= 1f ? f : 2f - f;
+        }
+    }
+
+    /// <summary>성공 구간의 시작·끝.</summary>
+    public float ActiveReloadStart => _arStart;
+    public float ActiveReloadEnd => _arEnd;
+
+    /// <summary>아직 기회가 남아 있는가(한 번 누르면 성공이든 실패든 끝난다).</summary>
+    public bool ActiveReloadReady => _reloading && activeReloadEnabled && !_arUsed;
+
+    /// <summary>마지막 시도의 결과. 0=시도 없음, 1=성공, -1=실패(연출이 남아 있는 동안만).</summary>
+    public int ActiveReloadFeedback =>
+        Time.time - _arFeedbackTime > 0.45f ? 0 : (_arSuccess ? 1 : -1);
+
+    /// <summary>
+    /// 난이도 계수 0~1. 보스 체력이 줄수록 오른다 — 성공 구간이 좁아지고 화살표가 빨라진다.
+    ///
+    /// 보스가 없거나 죽었으면 0(가장 쉬움)이다. 전투가 아닐 때까지 어렵게 만들 이유가 없다.
+    /// 단계(70%/50%)로 끊지 않고 연속으로 두는 이유: 한 대 때릴 때마다 아주 조금씩
+    /// 조여드는 편이, 어느 순간 갑자기 어려워지는 것보다 압박이 자연스럽게 쌓인다.
+    /// </summary>
+    private float ActiveReloadDifficulty01
+    {
+        get
+        {
+            var boss = BossController.Active;
+            if (boss == null || boss.IsDead || boss.MaxHealth <= 0.01f) return 0f;
+            return Mathf.Clamp01(1f - boss.Health / boss.MaxHealth);
+        }
+    }
 
     /// <summary>최근에 발사했는가(발사 모션이 재생될 동안). UpperBody 레이어를 켜두는 데 쓴다.</summary>
     public bool FiredRecently => Time.time - _lastFireTime < fireMotionHold;
@@ -218,9 +299,14 @@ public class PlayerShooter : MonoBehaviour
 
         // 수동 재장전(R). 자동 재장전은 탄 소진 시 Fire에서 발동.
         // 사망 후에는 R이 '재시작'이므로 여기서는 받지 않는다(HudUI가 처리).
+        // 재장전 중이면 같은 R이 '빠른 재장전' 입력이 된다 — 키를 새로 만들지 않는 편이
+        // 손에 익는다(어차피 재장전 중엔 R이 하는 일이 없었다).
         if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame
             && !(_stats != null && _stats.IsDead))
-            StartReload();
+        {
+            if (_reloading) TryActiveReload();
+            else StartReload();
+        }
 
         UpdateReload();
 
@@ -440,6 +526,21 @@ public class PlayerShooter : MonoBehaviour
         _reloading = true;
         _reloadStartTime = Time.time;
         _reloadStateSeen = false;
+
+        // 난이도는 재장전을 시작할 때 한 번만 정해 고정한다.
+        // 매 프레임 다시 재면 재장전 도중 보스를 맞히는 순간 화살표 속도가 튄다.
+        float hard = ActiveReloadDifficulty01;
+        _arSweeps = Mathf.Max(0.25f, Mathf.Lerp(activeReloadSweeps, activeReloadSweepsMax, hard));
+
+        // 성공 구간은 매번 새로 뽑는다 — 자리가 고정되면 화면을 보지 않고
+        // 박자만 외워서 누르게 되고, 그러면 미니게임이 아니라 그냥 단축키가 된다.
+        float span = Mathf.Clamp(Mathf.Lerp(activeReloadWindow, activeReloadWindowMin, hard), 0.02f, 0.4f);
+        float lo = Mathf.Clamp01(Mathf.Min(activeReloadRange.x, activeReloadRange.y));
+        float hi = Mathf.Clamp01(Mathf.Max(activeReloadRange.x, activeReloadRange.y));
+        _arStart = Random.Range(lo, Mathf.Max(lo, hi - span));
+        _arEnd = Mathf.Min(1f, _arStart + span);
+        _arUsed = false;
+
         GameSfx.Play(Sfx.Reload);
         if (animator != null && animator.runtimeAnimatorController != null)
         {
@@ -453,6 +554,49 @@ public class PlayerShooter : MonoBehaviour
             animator.ResetTrigger(FireHash);
             animator.SetTrigger(ReloadHash);
         }
+    }
+
+    /// <summary>
+    /// 빠른 재장전 시도(재장전 중 R).
+    ///
+    /// 기회는 <b>재장전당 한 번</b>이다. 실패해도 벌칙은 없지만 기회가 사라지므로,
+    /// 연타로 긁어 맞히는 것이 최선의 전략이 되지 않는다 — 화살표를 보고 눌러야 한다.
+    /// </summary>
+    private void TryActiveReload()
+    {
+        if (!activeReloadEnabled || !_reloading || _arUsed) return;
+
+        _arUsed = true;
+        float t = ActiveReloadMarker01;   // 진행도가 아니라 화살표 자리로 판정한다(왕복하므로 다르다)
+        _arSuccess = t >= _arStart && t <= _arEnd;
+        _arFeedbackTime = Time.time;
+
+        if (_arSuccess)
+        {
+            FinishReload(cutMotion: true);
+            GameSfx.Play(Sfx.Reload, 1f, 1.6f);   // 같은 소리를 높게 — "빨리 끝났다"는 신호
+        }
+        else GameSfx.Play(Sfx.Reload, 0.5f, 0.55f);
+    }
+
+    /// <summary>
+    /// 재장전을 지금 끝낸다(탄창을 채우고 모션도 끊는다).
+    ///
+    /// 빠른 재장전으로 <b>중간에</b> 끝낼 때는 모션도 함께 끊어야 한다(cutMotion) —
+    /// 발사 조건이 <see cref="ReloadMotionPlaying"/>도 보고 있어서, 탄만 채우고 모션을 두면
+    /// <b>탄은 찼는데 쏘지 못하는</b> 상태가 되어 아낀 시간이 그대로 사라진다.
+    /// 정상 완료는 이미 모션이 끝난 뒤라 끊을 필요가 없다(끊으면 뒷동작만 잘린다).
+    /// </summary>
+    private void FinishReload(bool cutMotion = false)
+    {
+        _reloading = false;
+        _reloadStateSeen = false;
+        _ammo = magazineSize;
+
+        if (!cutMotion || animator == null || animator.runtimeAnimatorController == null) return;
+        animator.ResetTrigger(ReloadHash);
+        if (_upperLayerIdx == -2) _upperLayerIdx = animator.GetLayerIndex("UpperBody");
+        if (_upperLayerIdx >= 0) animator.Play("Rifle Hold", _upperLayerIdx, 0f);
     }
 
     /// <summary>
@@ -499,11 +643,7 @@ public class PlayerShooter : MonoBehaviour
             done = elapsed >= reloadTime;
         }
 
-        if (done)
-        {
-            _reloading = false;
-            _ammo = magazineSize;
-        }
+        if (done) FinishReload();
     }
 
     /// <summary>탄착 이펙트: 프리팹이 있으면 사용, 없으면 재사용형 스파크/먼지 FX를 코드로 생성.</summary>

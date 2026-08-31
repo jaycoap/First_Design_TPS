@@ -259,6 +259,19 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     [Tooltip("레이저/텔레포트/발톱에 공통으로 쓰이는 보스 색")]
     [SerializeField] private Color bossColor = new Color(0.75f, 0.3f, 1f);
     [SerializeField] private Color hitFlashColor = new Color(1f, 0.35f, 0.35f);
+    [Tooltip("보스의 눈이 상시로 빛나는 색")]
+    [SerializeField] private Color eyeGlowColor = new Color(0.72f, 0.25f, 1f);
+    [Tooltip("눈 자리를 씬 오브젝트로 직접 잡고 싶을 때 넣는다(둘 다 채워야 쓰인다).\n" +
+             "Tools/TPS/보스 눈 앵커 만들기 를 실행하면 머리 본 아래에 만들어 자동으로 연결한다.\n" +
+             "이후에는 씬 뷰에서 끌어다 맞추면 되고, 오브젝트를 키우면 눈도 같이 커진다.")]
+    [SerializeField] private Transform eyeAnchorLeft;
+    [SerializeField] private Transform eyeAnchorRight;
+    [Tooltip("앵커가 없을 때 쓰는 눈 위치. 값은 전부 '머리 길이(머리 본→정수리)에 대한 비율'이다.\n" +
+             "x=좌우 간격(중심에서 한쪽), y=머리 축 방향 위, z=얼굴 앞.\n" +
+             "비율이라 모델 크기가 달라져도 그대로 맞는다.")]
+    [SerializeField] private Vector3 eyeGlowOffset = new Vector3(0.2f, 0.34f, 0.42f);
+    [Tooltip("눈동자 하나의 지름. 이것도 머리 길이에 대한 비율이다.")]
+    [SerializeField] private float eyeGlowRadius = 0.17f;
     [Tooltip("장애물/지면 판정 마스크(자기 몸은 코드에서 제외)")]
     [SerializeField] private LayerMask obstacleMask = ~0;
 
@@ -323,6 +336,7 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private GunFx.ImpactFx _beamImpact;  // 레이저 착탄 전용(굵은 광선에 맞춘 큰 폭발)
     private GunFx.MuzzleFx _muzzleFx;    // 발사 순간 손끝에서 터지는 방출광
     private BossFx.ChargeOrb _realOrb;   // 분신 처형 전용(진짜만 다른 색)
+    private BossFx.EyeGlow _eyes;        // 살아 있는 동안 상시로 켜지는 눈빛
     private BossFx.Beam _realBeam;
 
     // 피격 점멸
@@ -462,6 +476,17 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     /// </summary>
     private void WarpTo(Vector3 position, Quaternion? rotation = null)
     {
+        // 모든 순간이동은 여기를 지난다 — 아레나 밖으로 나가는 길을 한 곳에서 막는다.
+        // 패턴마다 자리를 따로 계산하다 보면 한 군데씩 빠뜨리게 되는데, 밖으로 나간 보스는
+        // 벽(실제 콜라이더)에 막혀 스스로 돌아오지 못하므로 그 한 번이 곧 전투 정지다.
+        var arena = Arena;
+        if (arena != null && !arena.ClampInside(position, ArenaMargin, out Vector3 inside))
+        {
+            Debug.LogWarning($"[Boss] 아레나 밖({position})으로 이동하려 해서 안쪽({inside})으로 당겼습니다. " +
+                             $"패턴={_phase}");
+            position = inside;
+        }
+
         _cc.enabled = false;
         if (rotation.HasValue) transform.SetPositionAndRotation(position, rotation.Value);
         else transform.position = position;
@@ -563,6 +588,12 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             // 연타는 양팔을 번갈아 쓰므로 궤적도 양쪽에 붙인다
             _claw = BossFx.BuildClawTrail(_rig.ClawTips(BossRig.Arm.Right), _k, bossColor);
             _clawLeft = BossFx.BuildClawTrail(_rig.ClawTips(BossRig.Arm.Left), _k, bossColor);
+
+            // 눈빛(상시). 몸이 보이는 동안에만 켜지도록 LateUpdate가 매 프레임 갱신한다
+            _eyes = BossFx.BuildEyeGlow(_rig.Head, _rig.HeadTop, transform, _k, eyeGlowColor,
+                                        eyeGlowOffset, eyeGlowRadius);
+            // 앵커를 넣어 뒀으면 계산 대신 그 자리를 그대로 따라간다
+            _eyes?.SetAnchors(eyeAnchorLeft, eyeAnchorRight);
         }
     }
 
@@ -718,10 +749,22 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         // 되감기로 되돌릴 수 있도록 패턴 쿨다운을 계속 기록해 둔다
         RecordPatternState();
 
+        // 눈빛은 살아 있는 내내 켜 둔다 — 특정 국면의 신호가 아니라 이 보스의 생김새다.
+        // 몸이 숨겨진 동안(등장 컷신 전·텔레포트 중)과 죽은 뒤에만 꺼진다.
+        if (_eyes != null) _eyes.Active = !_hidden && _phase != Phase.Dead;
+
         // 분신 처형 중에는 '진짜 전용' 색의 충전/광선을 쓴다(분신과 구분되는 유일한 단서)
         BossFx.ChargeOrb orb = _judgmentActive && _realOrb != null ? _realOrb : _orb;
         BossFx.Beam beam = _judgmentActive && _realBeam != null ? _realBeam : _beam;
+
+        // 선택에서 빠진 쪽은 반드시 내린다. 아래 갱신은 '고른 것'에만 닿으므로,
+        // 고르는 기준(_judgmentActive)이 바뀌는 순간 빠진 쪽이 마지막 상태 그대로 얼어붙는다.
+        // 실제로 파훼 순간 _judgmentActive가 꺼지면서 '진짜 전용' 주황색 충전 구체와
+        // 조준 예고선이 화면에 박힌 채 남아, 보스가 계속 플레이어를 겨누는 것처럼 보였다.
         if (orb != _orb && _orb != null) _orb.Visible = false;
+        if (orb != _realOrb && _realOrb != null) _realOrb.Visible = false;
+        if (beam != _beam && _beam != null) _beam.HidePreview();
+        if (beam != _realBeam && _realBeam != null) _realBeam.HidePreview();
 
         if (orb != null)
         {
@@ -1229,10 +1272,17 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         // --- 2) 아레나 한가운데 상공으로 ---
         // 높이는 아레나 오브젝트의 원점이 아니라 '실제 바닥'을 재서 올린다 —
         // 원점이 바닥과 다른 씬에서 땅에 박히거나 너무 높이 뜨는 것을 막는다.
+        // 중심은 아레나의 것만 쓴다 — ResolveJudgmentRing이 돌려주는 y는 분신이 뜰
+        // '천장 근처' 높이라, 그걸 바닥 탐색의 기준으로 삼으면 안 된다.
         ResolveJudgmentRing(out Vector3 center, out _);
-        Vector3 spot = center + Vector3.up * aerialHeight;
-        if (TryFindFloor(center, out float floorY))
-            spot.y = floorY + aerialHeight;
+
+        // 바닥은 반드시 <b>보스가 서 있는 높이</b>를 기준으로 잰다.
+        // TryFindFloor는 기준보다 한 몸 높이까지 올라온 면도 발판으로 인정하므로,
+        // 이미 올라간 y로 부르면 아레나 한가운데의 구조물 지붕을 바닥으로 잡는다 —
+        // 그 위로 다시 aerialHeight를 더하면 보스가 맵 밖(건물 위)에 뜬다.
+        Vector3 spot = center;
+        spot.y = (TryFindFloorUnderBoss(center, out float floorY) ? floorY : transform.position.y)
+               + aerialHeight;
 
         WarpTo(spot);
         TrackTarget(999f); // 즉시 플레이어 쪽을 본다
@@ -1769,16 +1819,10 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
             Vector2 offset = RngInsideUnitCircle() * (meteorSpread * _k);
             Vector3 candidate = _targetT.position + new Vector3(offset.x, 0f, offset.y);
 
-            // 아레나가 있으면 벽 안쪽으로 끌어당긴다(밖에 떨어져 봐야 보이지도 않는다)
+            // 아레나가 있으면 벽 안쪽으로 끌어당긴다(밖에 떨어져 봐야 보이지도 않는다).
+            // 벽에 축마다 다른 스케일이 걸려 있으면 원이 아니라 타원이므로 판정은 ArenaWall에 맡긴다.
             var arena = Arena;
-            if (arena != null)
-            {
-                Vector3 c = arena.transform.position;
-                Vector3 flat = candidate - c;
-                flat.y = 0f;
-                float max = arena.Radius * 0.92f;
-                if (flat.magnitude > max) candidate = c + flat.normalized * max;
-            }
+            if (arena != null) candidate = arena.ClampedInside(candidate, ArenaMargin * 1.5f);
 
             // 바닥 높이 확정. TryFindFloor를 쓴다 — 여기서 따로 "가장 높은 히트"를 고르면
             // 닫힌 실내에서 천장을 바닥으로 잡아 낙하물이 천장에 떨어진다.
@@ -1816,12 +1860,13 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
     private bool IsInsideArena(Vector3 point, float margin)
     {
         var arena = Arena;
-        if (arena == null) return true;
-
-        Vector3 flat = point - arena.transform.position;
-        flat.y = 0f;
-        return flat.magnitude <= Mathf.Max(0.01f, arena.Radius - margin);
+        return arena == null || arena.Contains(point, margin);
     }
+
+    /// <summary>보스 캡슐이 벽에 닿지 않을 만큼의 여유(월드 미터).</summary>
+    private float ArenaMargin => _cc != null
+        ? _cc.radius * Mathf.Abs(transform.lossyScale.x) * 1.5f
+        : 0.3f * _k;
 
     /// <summary>
     /// 아레나 밖에 있는 보스를 안쪽 가장자리로 되돌린다(성공하면 true).
@@ -1832,14 +1877,9 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         var arena = Arena;
         if (arena == null) return false;
 
-        Vector3 center = arena.transform.position;
-        Vector3 flat = transform.position - center;
-        flat.y = 0f;
-        if (flat.sqrMagnitude < 1e-6f) return false;
-
-        // 벽에 다시 끼지 않도록 캡슐 지름만큼 안쪽으로 들어온다
-        float margin = _cc.radius * Mathf.Abs(transform.lossyScale.x) * 2f;
-        Vector3 spot = center + flat.normalized * Mathf.Max(0.01f, arena.Radius - margin);
+        // 벽에 다시 끼지 않도록 캡슐 지름만큼 안쪽으로 들어온다.
+        // 벽에 축마다 다른 스케일이 걸려 있을 수 있어(=타원) 판정은 ArenaWall에 맡긴다.
+        if (arena.ClampInside(transform.position, ArenaMargin * 1.4f, out Vector3 spot)) return false;
         if (TryFindFloorUnderBoss(spot, out float floorY)) spot.y = floorY;
 
         _flash?.Spawn(BodyCenter());
@@ -1973,6 +2013,11 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         {
             float a = (angleOffset + 360f / total * i) * Mathf.Deg2Rad;
             Vector3 pos = center + new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a)) * ring;
+
+            // 여기서 미리 당겨 둔다. WarpTo도 아레나 밖을 막지만, 그건 진짜 보스에게만
+            // 걸리므로 분신과 반지름이 어긋나 '혼자 안쪽에 선 놈'이 정답이 돼 버린다.
+            if (Arena != null) pos = Arena.ClampedInside(pos, ArenaMargin);
+
             Vector3 look = center - pos;
             look.y = 0f;
             Quaternion rot = look.sqrMagnitude > 1e-6f
@@ -2756,9 +2801,46 @@ public class BossController : MonoBehaviour, IDamageable, IRewindableExtra, IRew
         SetHidden(false);
     }
 
+    /// <summary>
+    /// 재생하지 않고도 눈 자리를 볼 수 있게 그린다. 오프셋으로 맞추든 앵커로 맞추든
+    /// 결국 <b>씬 뷰에서 눈으로 보고</b> 맞추는 것이라, 이 기즈모가 조정의 실질적인 눈금이다.
+    /// </summary>
+    private void DrawEyeGizmo(float k)
+    {
+        var anim = GetComponent<Animator>();
+        Transform head = anim != null && anim.avatar != null && anim.avatar.isHuman
+                       ? anim.GetBoneTransform(HumanBodyBones.Head) : null;
+        if (head == null) return;
+
+        Transform headTop = BossRig.FindHeadTop(head);
+        float headLen = BossFx.HeadLengthOf(head, headTop, k);
+        Vector3 l, r;
+
+        if (eyeAnchorLeft != null && eyeAnchorRight != null)
+        {
+            l = eyeAnchorLeft.position;
+            r = eyeAnchorRight.position;
+        }
+        else BossFx.ResolveEyePositions(head, headTop, transform, eyeGlowOffset, k, out l, out r, out headLen);
+
+        Gizmos.color = eyeGlowColor;
+        float rad = eyeGlowRadius * headLen * 0.5f;
+        Gizmos.DrawWireSphere(l, rad);
+        Gizmos.DrawWireSphere(r, rad);
+
+        // 머리 축(머리 본 → 정수리). 눈이 어느 방향을 '위'로 삼아 얹히는지 보여 준다.
+        if (headTop != null)
+        {
+            Gizmos.color = new Color(eyeGlowColor.r, eyeGlowColor.g, eyeGlowColor.b, 0.35f);
+            Gizmos.DrawLine(head.position, headTop.position);
+        }
+    }
+
     private void OnDrawGizmosSelected()
     {
         float k = Application.isPlaying ? _k : 1f;
+
+        DrawEyeGizmo(k);
 
         // 근접: 실제 판정 사거리를 그린다(설정값이 아니라 여유·마무리 배율까지 곱한 값).
         // 안쪽 원 = 일반 타, 바깥 원 = 마무리 타.

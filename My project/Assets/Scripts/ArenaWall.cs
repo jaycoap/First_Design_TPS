@@ -100,6 +100,66 @@ public class ArenaWall : MonoBehaviour
         segments = Mathf.Clamp(radii.Length, 8, 128);
     }
 
+    /// <summary>
+    /// 로컬 평면 방향에서의 외곽선 반지름. 프로필이 있으면 이웃한 두 값을 섞는다.
+    /// 각도 규약은 <see cref="OutlinePoint"/>와 같다 — 0이 +Z, 시계 방향.
+    /// </summary>
+    public float LocalRadiusToward(Vector3 localFlat)
+    {
+        if (!HasProfile) return radius;
+
+        int n = profile.Length;
+        float deg = Mathf.Atan2(localFlat.x, localFlat.z) * Mathf.Rad2Deg;
+        float t = deg / (360f / n);
+        int i = Mathf.FloorToInt(t);
+        float f = t - i;
+        return Mathf.Lerp(profile[((i % n) + n) % n], profile[(((i + 1) % n) + n) % n], f);
+    }
+
+    /// <summary>월드 점이 아레나 안인가(margin만큼 벽에서 떨어져 있어야 인정).</summary>
+    public bool Contains(Vector3 worldPoint, float margin = 0f)
+        => ClampInside(worldPoint, margin, out _);
+
+    /// <summary>월드 점을 아레나 안으로 끌어들인다(이미 안이면 그대로). 높이는 건드리지 않는다.</summary>
+    public Vector3 ClampedInside(Vector3 worldPoint, float margin = 0f)
+    {
+        ClampInside(worldPoint, margin, out Vector3 inside);
+        return inside;
+    }
+
+    /// <summary>
+    /// 안팎을 판정하고, 밖이면 가장 가까운 안쪽 점을 돌려준다.
+    ///
+    /// 판정은 <b>로컬 좌표</b>에서 한다. 이 오브젝트에 축마다 다른 스케일이 걸려 있으면
+    /// 벽은 월드에서 원이 아니라 <b>타원</b>이 되는데, 월드 거리와 <see cref="Radius"/>를
+    /// 그대로 비교하면 짧은 축 쪽에서 벽 너머를 '안'으로 인정해 버린다.
+    /// (이 씬의 벽은 실제로 x 0.96 / z 0.91로 눌려 있다)
+    /// </summary>
+    /// <returns>이미 안쪽이면 true.</returns>
+    public bool ClampInside(Vector3 worldPoint, float margin, out Vector3 inside)
+    {
+        inside = worldPoint;
+
+        Vector3 local = transform.InverseTransformPoint(worldPoint);
+        float y = local.y;
+        local.y = 0f;
+
+        // 여유(margin)는 월드 길이다 — 가장 크게 줄어드는 축을 기준으로 로컬 길이로 바꾼다.
+        // (모자라게 잡아 벽에 끼는 것보다 넉넉히 잡아 조금 더 안쪽에 서는 편이 안전하다)
+        Vector3 s = transform.lossyScale;
+        float minScale = Mathf.Min(Mathf.Abs(s.x), Mathf.Abs(s.z));
+        float localMargin = minScale > 1e-6f ? margin / minScale : margin;
+
+        float limit = Mathf.Max(0.01f, LocalRadiusToward(local) - localMargin);
+        float d = local.magnitude;
+        if (d <= limit) return true;
+
+        Vector3 clamped = d > 1e-6f ? local * (limit / d) : new Vector3(0f, 0f, limit);
+        clamped.y = y;
+        inside = transform.TransformPoint(clamped);
+        return false;
+    }
+
     /// <summary>현재 값으로 벽 조각들을 다시 만든다(기존 조각은 지운다).</summary>
     [ContextMenu("벽 다시 만들기")]
     public void Rebuild()

@@ -58,7 +58,21 @@ public class BossRig : MonoBehaviour
     private readonly float[] _bendSign = new float[2];
     private readonly Transform[] _indexTip = new Transform[2];
     private Transform _chest;
+    private Transform _head, _headTop;
     private bool _ready;
+
+    /// <summary>머리 본(휴머노이드가 아니면 null). 눈빛 이펙트를 매다는 자리.</summary>
+    public Transform Head => _head;
+
+    /// <summary>
+    /// 정수리 본(Mixamo 계열은 <c>HeadTop_End</c>). 눈 위치를 <b>머리 길이의 비율</b>로
+    /// 잡는 데 쓴다 — 절대 미터로 잡으면 모델이 바뀔 때마다 눈이 이마나 턱으로 어긋난다.
+    ///
+    /// 머리 본에서 정수리로 향하는 벡터는 <b>머리가 기울어진 방향</b>이기도 하다.
+    /// 이 보스는 머리를 앞으로 37도쯤 내밀고 있어서, 몸통의 위쪽을 기준으로 눈을 얹으면
+    /// 얼굴이 아니라 뒤통수에 붙는다.
+    /// </summary>
+    public Transform HeadTop => _headTop;
 
     /// <summary>검지 끝 앵커(레이저 발사 원점 / 충전 구체 부착점). 없으면 손 본.</summary>
     public Transform IndexTip(Arm arm) => _indexTip[(int)arm] != null ? _indexTip[(int)arm] : _hand[(int)arm];
@@ -99,7 +113,10 @@ public class BossRig : MonoBehaviour
               ?? _anim.GetBoneTransform(HumanBodyBones.Chest)
               ?? _anim.GetBoneTransform(HumanBodyBones.Spine);
 
-        _ready = _hand[0] != null || _hand[1] != null;
+        _head = _anim.GetBoneTransform(HumanBodyBones.Head);
+        _headTop = FindHeadTop(_head);
+
+        _ready =_hand[0] != null || _hand[1] != null;
     }
 
     // ---------- 외부 요청(매 프레임 호출) ----------
@@ -280,6 +297,25 @@ public class BossRig : MonoBehaviour
     }
 
     // ---------- 본 캐시 ----------
+
+    /// <summary>
+    /// 머리 본 아래에서 정수리 본을 찾는다. Mixamo는 <c>HeadTop_End</c> 하나뿐이지만
+    /// 이름 규칙이 다른 리그도 있어, 이름으로 먼저 찾고 없으면 첫 자식을 정수리로 본다.
+    /// (자식이 아예 없으면 null — 부르는 쪽이 사람 비율로 대신 계산한다)
+    /// </summary>
+    public static Transform FindHeadTop(Transform head)
+    {
+        if (head == null || head.childCount == 0) return null;
+
+        for (int i = 0; i < head.childCount; i++)
+        {
+            string n = head.GetChild(i).name;
+            if (n.IndexOf("Top", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                n.IndexOf("End", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                return head.GetChild(i);
+        }
+        return head.GetChild(0);
+    }
 
     private void CacheArm(Arm arm, HumanBodyBones upper, HumanBodyBones lower, HumanBodyBones hand,
                           HumanBodyBones thumbProximal)

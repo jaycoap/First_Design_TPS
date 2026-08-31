@@ -92,6 +92,24 @@ public static class BossFx
         return orb;
     }
 
+    /// <summary>
+    /// 머리 본에 붙는 눈빛. head가 없으면(비휴머노이드 리그) null을 돌려준다 —
+    /// 대신 몸통에 붙이면 발밑에서 빛나므로, 못 붙이면 아예 안 붙이는 편이 낫다.
+    /// </summary>
+    public static EyeGlow BuildEyeGlow(Transform head, Transform headTop, Transform body,
+                                       float scale, Color color,
+                                       Vector3 offset, float radius, bool withLight = true)
+    {
+        if (head == null) return null;
+        var go = Mark(new GameObject("BossEyeGlow"));
+        go.transform.SetParent(head, false);
+        go.transform.localPosition = Vector3.zero;
+        NeutralizeScale(go.transform); // 본 스케일 상쇄 — 눈 크기를 월드 미터로 다룬다
+        var eyes = go.AddComponent<EyeGlow>();
+        eyes.Init(head, headTop, body, scale, color, offset, radius, withLight);
+        return eyes;
+    }
+
     /// <summary>레이저 광선(발사) + 예고선(충전 중 조준선).</summary>
     public static Beam BuildBeam(Transform parent, float scale, Color color)
     {
@@ -237,6 +255,55 @@ public static class BossFx
 
         /// <summary>쌓아 둔 값을 한 번에 밀어 넣는다.</summary>
         public void Apply() => _r.SetPropertyBlock(_mpb);
+    }
+
+    /// <summary>
+    /// 머리 본에서 정수리까지의 길이(월드 미터). 눈 위치·크기의 기준자다.
+    /// 정수리 본이 없는 리그에서는 사람 비율(1.8m 기준 0.13m)로 어림한다.
+    /// </summary>
+    public static float HeadLengthOf(Transform head, Transform headTop, float scale)
+    {
+        if (head != null && headTop != null)
+        {
+            float len = Vector3.Distance(headTop.position, head.position);
+            if (len > 1e-5f) return len;
+        }
+        return 0.13f * scale;
+    }
+
+    /// <summary>
+    /// 머리 본을 기준으로 두 눈의 월드 위치를 계산한다. offset은 <b>머리 길이에 대한 비율</b>
+    /// (x=좌우 간격, y=머리 축 방향 위, z=얼굴 앞)이라 모델 크기가 달라도 그대로 맞는다.
+    ///
+    /// '위'는 몸통의 위가 아니라 <b>머리 본 → 정수리</b> 방향이다. 이 보스는 머리를 앞으로
+    /// 크게 내밀고 있어서, 몸통 기준으로 눈을 얹으면 얼굴이 아니라 뒤통수 위에 뜬다.
+    /// '앞'은 그 축에 수직으로 세운 몸통 정면 — 얼굴 면을 따라간다.
+    ///
+    /// 에디터 기즈모와 앵커 생성 도구도 같은 계산을 써야 하므로 여기에 둔다.
+    /// </summary>
+    public static void ResolveEyePositions(Transform head, Transform headTop, Transform body,
+                                           Vector3 offset, float scale,
+                                           out Vector3 left, out Vector3 right, out float headLen)
+    {
+        headLen = HeadLengthOf(head, headTop, scale);
+        if (head == null) { left = right = Vector3.zero; return; }
+
+        Transform b = body != null ? body : head;
+
+        Vector3 up = headTop != null ? headTop.position - head.position : b.up;
+        up = up.sqrMagnitude > 1e-8f ? up.normalized : b.up;
+
+        // 얼굴 정면: 몸통 정면에서 머리 축 성분을 빼 축과 직각으로 만든다.
+        // (머리를 완전히 젖혀 두 방향이 나란해지는 극단에서는 몸통 정면을 그대로 쓴다)
+        Vector3 fwd = b.forward - up * Vector3.Dot(b.forward, up);
+        fwd = fwd.sqrMagnitude > 1e-6f ? fwd.normalized : b.forward;
+
+        Vector3 side = Vector3.Cross(up, fwd).normalized;   // 머리 기준 왼쪽
+
+        Vector3 center = head.position + up * (offset.y * headLen) + fwd * (offset.z * headLen);
+        Vector3 half = side * (offset.x * headLen);
+        left = center + half;
+        right = center - half;
     }
 
     /// <summary>XZ 평면에 눕힌 판을 카메라 쪽으로 세운다(빌보드).</summary>
@@ -407,6 +474,141 @@ public static class BossFx
                 _light.enabled = on;
                 if (!on) _light.intensity = 0f;
             }
+        }
+    }
+
+    /// <summary>
+    /// 보스의 <b>빛나는 눈</b>. 살아서 모습을 드러내고 있는 내내 켜져 있다.
+    ///
+    /// 위치를 정하는 방법은 두 가지다.
+    ///  1. <b>앵커</b>(<see cref="SetAnchors"/>) — 씬에 놓인 빈 오브젝트를 그대로 따라간다.
+    ///     눈금이 아니라 눈으로 맞추는 방법이라, 모델을 보면서 끌어다 두면 된다.
+    ///  2. 앵커가 없으면 <b>머리 길이의 비율</b>로 계산한다(<see cref="ResolveEyePositions"/>).
+    ///
+    /// 눈동자는 카메라를 향해 세운 Radial/Orb 판 두 장이다. 깊이 판정을 살려 두므로
+    /// 뒤에서 보면 머리에 가려 보이지 않는다 — 정면으로 마주 봤을 때만 노려보는 눈이 된다.
+    /// </summary>
+    public class EyeGlow : MonoBehaviour
+    {
+        private Surface _left, _right;
+        private Light _light;
+        private Camera _cam;
+        private Transform _head, _headTop, _body;
+        private Transform _anchorL, _anchorR;
+        private Color _color;
+        private float _scale, _fade, _radius;
+        private Vector3 _offset;   // 머리 길이에 대한 비율 (x=좌우 간격, y=머리 축 위, z=얼굴 앞)
+
+        /// <summary>켜짐 여부. 끄면 부드럽게 사그라든다.</summary>
+        public bool Active { get; set; }
+
+        /// <summary>
+        /// 눈을 붙일 자리를 씬 오브젝트로 직접 지정한다(둘 다 있어야 쓰인다).
+        /// 앵커의 <c>localScale.x</c>가 눈 크기 배율이 되므로, 오브젝트를 키우면 눈도 커진다.
+        /// </summary>
+        public void SetAnchors(Transform left, Transform right)
+        {
+            _anchorL = left;
+            _anchorR = right;
+        }
+
+        internal void Init(Transform head, Transform headTop, Transform body, float scale, Color color,
+                           Vector3 offset, float radius, bool withLight)
+        {
+            _head = head;
+            _headTop = headTop;
+            _body = body != null ? body : head;
+            _scale = scale;
+            _color = color;
+            _offset = offset;
+            _radius = Mathf.Max(0.001f, radius);
+
+            // 가산 합성이라 심을 흰색까지 올리면 보라색이 날아간다 —
+            // 다른 보스 이펙트와 같은 규칙으로 살짝만 과열시킨다.
+            Color hot = Color.Lerp(color, Color.white, 0.3f);
+
+            _left = MakeEye("EyeL", hot);
+            _right = MakeEye("EyeR", hot);
+
+            if (withLight)
+            {
+                // 눈에서 새어 나오는 빛. 하나만 단다 — URP 포워드는 오브젝트당 추가 광원을
+                // 상위 몇 개만 고르므로, 상시 켜 두는 광원을 둘로 늘릴 이유가 없다.
+                _light = gameObject.AddComponent<Light>();
+                _light.type = LightType.Point;
+                _light.color = color;
+                _light.range = 2.4f * scale;
+                _light.intensity = 0f;
+                _light.shadows = LightShadows.None;
+                _light.enabled = false;
+            }
+        }
+
+        /// <summary>머리 본에서 정수리까지의 길이(월드 미터). 정수리 본이 없으면 사람 비율로 어림한다.</summary>
+        private float HeadLength => HeadLengthOf(_head, _headTop, _scale);
+
+        private Surface MakeEye(string name, Color hot)
+        {
+            var s = new Surface(name, transform, BossFXLibrary.QuadXZ, RadialMat);
+            s.Set(BossFXLibrary.PMode, (float)(int)BossRadialMode.Orb)
+             .Set(BossFXLibrary.PColorCore, hot)
+             .Set(BossFXLibrary.PColorEdge, _color)
+             .Set(BossFXLibrary.PThickness, 0.32f)   // 밝은 심이 작을수록 '동공'처럼 읽힌다
+             .Set(BossFXLibrary.PFalloff, 2.8f)
+             .Apply();
+            return s;
+        }
+
+        private void LateUpdate()
+        {
+            _fade = Mathf.MoveTowards(_fade, Active ? 1f : 0f, 2.5f * Time.deltaTime);
+
+            bool shown = _fade > 0.002f && _head != null;
+            if (_left != null) _left.Shown = shown;
+            if (_right != null) _right.Shown = shown;
+            if (_light != null) _light.enabled = shown;
+            if (!shown) return;
+
+            if (_cam == null) _cam = Camera.main;
+
+            // 느린 호흡. 깜빡임이 아니라 '살아 있다'는 정도의 흔들림만 준다.
+            float breathe = 0.9f + 0.1f * Mathf.Sin(Time.time * 2.2f);
+
+            float headLen = HeadLength;
+            Vector3 lPos, rPos;
+            float lSize = 1f, rSize = 1f;
+
+            if (_anchorL != null && _anchorR != null)
+            {
+                lPos = _anchorL.position;
+                rPos = _anchorR.position;
+                lSize = Mathf.Max(0.01f, _anchorL.localScale.x);
+                rSize = Mathf.Max(0.01f, _anchorR.localScale.x);
+            }
+            else ResolveEyePositions(_head, _headTop, _body, _offset, _scale, out lPos, out rPos, out headLen);
+
+            // 눈판을 놓기 전에 뿌리를 옮긴다 — 나중에 옮기면 부모가 움직인 만큼
+            // 자식(눈)의 월드 위치가 함께 끌려가 한 프레임 어긋난다.
+            if (_light != null)
+            {
+                transform.position = (lPos + rPos) * 0.5f;   // 광원을 두 눈 사이로 끌어온다
+                _light.intensity = 2.2f * _fade * breathe;
+            }
+
+            float d = _radius * headLen * breathe * _fade;
+            PlaceEye(_left, lPos, d * lSize);
+            PlaceEye(_right, rPos, d * rSize);
+        }
+
+        private void PlaceEye(Surface s, Vector3 at, float diameter)
+        {
+            if (s == null) return;
+            s.T.position = at;
+            s.T.localScale = new Vector3(diameter, 1f, diameter);
+            FaceCamera(s.T, _cam);
+            s.Set(BossFXLibrary.PIntensity, 3.2f)
+             .Set(BossFXLibrary.POpacity, _fade * 0.9f)
+             .Apply();
         }
     }
 

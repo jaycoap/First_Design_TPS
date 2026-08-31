@@ -33,6 +33,11 @@ public class PlayerController : MonoBehaviour
              "'구르고 원래 자세로 돌아오는' 답답함이 사라진다. 1이면 예전처럼 끝까지 잠근다.")]
     [SerializeField, Range(0.4f, 1f)] private float rollControlReturn = 0.7f;
 
+    [Tooltip("이 시간(초) 동안 움직이려는데 못 움직이면 맵에 낀 것인지 확인한다.\n" +
+             "확인을 통과해야 실제로 빼내므로(파묻힘 또는 사방 막힘), 벽을 향해 걷는 중에는 발동하지 않는다.\n" +
+             "너무 짧으면 오판이 늘고, 너무 길면 낀 채로 오래 갇혀 있게 된다.")]
+    [SerializeField] private float stuckEscapeTime = 0.5f;
+
     [Header("중력/점프")]
     [SerializeField] private float gravity = -20f;
     [SerializeField] private float jumpHeight = 1.2f;
@@ -71,6 +76,12 @@ public class PlayerController : MonoBehaviour
     private bool _rollLocked;          // 롤 조작 잠금 구간(회복 구간에 들어서면 풀린다)
     private bool _rollStateActive;     // 직전 프레임 롤 상태(진입 순간에만 기력을 빼기 위한 판정)
     private bool _isRunning;           // 질주 중(외부 참조용)
+
+    // 맵 끼임 감시
+    private Vector3 _stuckLastPos;
+    private float _stuckTimer;
+    private bool _stuckBuried;         // 감시 구간 동안 한 번이라도 지오메트리에 파묻혔는가
+    private ArenaWall _arenaWall;      // 빼낼 방향(아레나 안쪽)을 잡는 데 쓴다
     private float _aimBlend;           // 조준 보정 블렌드(0~1)
     private float _poseGunYawOffset;   // 포즈상 총열이 몸 정면에서 틀어진 요 각(자동 측정)
     private WeaponHolder _weaponHolder;
@@ -109,6 +120,7 @@ public class PlayerController : MonoBehaviour
         // 스탯이 씬에 없으면 기본값으로 자동 추가(HUD/기력/타임포스가 항상 동작하도록)
         _stats = GetComponent<PlayerStats>();
         if (_stats == null) _stats = gameObject.AddComponent<PlayerStats>();
+        _stuckLastPos = transform.position;
     }
 
     /// <summary>다이브 롤 재생 중 여부(회피 판정용 — 롤 중 피격은 회피로 처리).</summary>
@@ -257,7 +269,8 @@ public class PlayerController : MonoBehaviour
 
         Vector3 velocity = horizontal + Vector3.up * _verticalVelocity;
         _cc.Move(velocity * Time.deltaTime);
-        CharacterUnstick.Resolve(_cc);
+        float buried = CharacterUnstick.Resolve(_cc, out Collider stuckIn);
+        UpdateStuckWatch(horizontal, buried, stuckIn);
 
         // --- Animator 갱신(컨트롤러가 실제로 있을 때만) ---
         if (animator != null && animator.runtimeAnimatorController != null)
@@ -304,6 +317,60 @@ public class PlayerController : MonoBehaviour
                 animator.SetLayerWeight(_upperLayerIdx, w);
             }
         }
+    }
+
+    /// <summary>
+    /// 맵에 끼었는지 지켜보다가, 확실할 때만 빼낸다.
+    ///
+    /// "움직이려는데 안 움직인다"만으로는 판정할 수 없다 — <b>벽에 대고 걸어도</b> 똑같기
+    /// 때문이다. 그래서 못 움직인 시간이 <see cref="stuckEscapeTime"/>만큼 쌓인 뒤,
+    /// 다음 둘 중 하나일 때만 끼임으로 인정한다.
+    ///   1. 그동안 한 번이라도 <b>지오메트리 안에 파묻혀</b> 있었다(CharacterUnstick이 알려 준다)
+    ///   2. 수평 <b>여덟 방향이 전부</b> 막혀 있다(벽에 붙어 선 것과 갇힌 것을 가르는 기준)
+    ///
+    /// 이 문턱이 없으면 벽을 향해 걷고 있을 뿐인데 몸이 옆으로 순간이동한다.
+    /// </summary>
+    private void UpdateStuckWatch(Vector3 intendedVelocity, float buried, Collider stuckIn)
+    {
+        Vector3 delta = transform.position - _stuckLastPos;
+        delta.y = 0f;
+        _stuckLastPos = transform.position;
+
+        float want = new Vector2(intendedVelocity.x, intendedVelocity.z).magnitude * Time.deltaTime;
+        if (want <= 1e-6f || delta.magnitude > want * 0.25f)
+        {
+            _stuckTimer = 0f;
+            _stuckBuried = false;
+            return;
+        }
+
+        if (buried > 0f) _stuckBuried = true;
+        _stuckTimer += Time.deltaTime;
+        if (_stuckTimer < stuckEscapeTime) return;
+
+        _stuckTimer = 0f;
+        if (!_stuckBuried && !CharacterUnstick.IsBoxedIn(_cc)) return;  // 그냥 벽에 막힌 것
+        _stuckBuried = false;
+
+        // 되도록 아레나 안쪽으로 빼낸다 — 맵 가장자리 구조물에 끼는 경우가 많은데,
+        // 바깥으로 빼내면 낙하 방지 벽 너머로 나가 버린다.
+        Vector3 hint = -transform.forward;
+        if (_arenaWall == null) _arenaWall = FindFirstObjectByType<ArenaWall>();
+        if (_arenaWall != null)
+        {
+            Vector3 inward = _arenaWall.transform.position - transform.position;
+            inward.y = 0f;
+            if (inward.sqrMagnitude > 1e-6f) hint = inward.normalized;
+        }
+
+        if (CharacterUnstick.TryEscape(_cc, hint))
+        {
+            _verticalVelocity = 0f;   // 들어 올렸다면 그대로 떨어지게 두지 않는다
+            Debug.Log($"[Player] 맵에 껴서 빠져나왔습니다. 낀 곳: " +
+                      $"{(stuckIn != null ? stuckIn.name : "(겹침 없음 — 사방이 막힘)")}");
+        }
+        else Debug.LogWarning("[Player] 맵에 낀 것 같은데 빠져나갈 자리를 찾지 못했습니다. " +
+                              $"위치={transform.position}");
     }
 
     /// <summary>CC 이동 중 충돌 접촉점 기록. 위를 향한 면(바닥)만 지면으로 취급.</summary>
